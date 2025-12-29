@@ -1,28 +1,22 @@
-# === Sensitive and local files ===
-.env
-.env.local
-.env.*.local
-secrets.txt
-
-# === n8n local data ===
-/n8n_data/
-# n8n logs, executions, etc.
-.n8n/
-
-# === Docker related ===
-*.pid
-*.log
-*.tmp
-*.bak
-*.swp
-*.sock
-
-# === OS / Editor ===
-.DS_Store
-Thumbs.db
-.vscode/
-.idea/
-
-# === Node / Python temp ===
-node_modules/
 __pycache__/
+*.pyc
+.env
+.env.*
+!.env.example
+.venv/
+.env.local
+.DS_Store
+.eggs/
+build/
+dist/
+.python-version
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage/
+.cache/
+.tox/
+.idea/
+.vscode/
+*.log
