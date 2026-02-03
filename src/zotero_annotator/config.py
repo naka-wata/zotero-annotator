@@ -14,6 +14,9 @@ class Settings(BaseSettings):
         case_sensitive=False,       # 環境変数名の大文字小文字を区別しない
     )
 
+    # .env から設定項目を読み込む
+    # 必須設定の場合は ... を指定し、デフォルト値がある場合は適宜設定する
+    
     # Zotero
     z_scope: Literal["user", "group"] = Field(..., alias="Z_SCOPE")
     z_id: str = Field(..., min_length=1, alias="Z_ID")
