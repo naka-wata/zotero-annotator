@@ -6,7 +6,7 @@ build-backend = "hatchling.build"
 name = "zotero-annotator"
 version = "0.1.0"
 description = "Automated Zotero PDF paragraph translation and annotation pipeline"
-authors = [{ name = "wataru nakamura"　}]
+authors = [{ name = "wataru nakamura (naka-wata)" }]
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
@@ -22,3 +22,6 @@ dependencies = [
 
 [project.scripts]
 zotero-annotator = "zotero_annotator.cli:app"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/zotero_annotator"]
