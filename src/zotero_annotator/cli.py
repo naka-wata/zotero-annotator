@@ -288,7 +288,13 @@ def dev_items(
                 break
             key = item.get("key") or ""
             title = (item.get("data") or {}).get("title") or ""
-            console.print(f"{count:>2}. {key}  {title}")
+            tags = zotero.extract_tag_names(item)
+            tags_text = ", ".join(tags) if tags else "-"
+            console.print(
+                f"{count:>2}. [bold cyan]item-key[/bold cyan] : [cyan]{key}[/cyan]  "
+                f"[bold green]title[/bold green] : [green]{title}[/green]  "
+                f"[bold yellow]tags[/bold yellow] : [yellow]{tags_text}[/yellow]"
+            )
         console.print(f"[cyan]tag={target_tag} displayed={min(count, max_items)}[/cyan]")
     finally:
         # Ensure client is closed (クライアントを確実にクローズ)
