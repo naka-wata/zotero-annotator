@@ -100,7 +100,8 @@ class ZoteroClient:
 
     # Download attachment file content (論文PDFをダウンロードする)
     def download_attachment(self, file_url: str) -> bytes:
-        resp = self._client.get(file_url, headers=self._headers())
+        # Zotero file endpoint returns 302 to S3; follow redirect to fetch bytes.
+        resp = self._client.get(file_url, headers=self._headers(), follow_redirects=True)
         resp.raise_for_status()
         return resp.content
 
