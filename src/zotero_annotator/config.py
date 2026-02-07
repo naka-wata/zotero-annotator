@@ -12,6 +12,7 @@ class _BaseEnvSettings(BaseSettings):
         env_file=".env",            # .env から設定を読み込む
         env_file_encoding="utf-8",  # .env を UTF-8 で読み込む
         case_sensitive=False,       # 環境変数名の大文字小文字を区別しない
+        extra="ignore",             # 未使用の環境変数は無視する
     )
 
 
