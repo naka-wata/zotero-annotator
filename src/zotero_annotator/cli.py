@@ -9,7 +9,7 @@ from rich.console import Console
 
 from zotero_annotator.clients.grobid import GrobidClient
 from zotero_annotator.clients.zotero import ZoteroClient
-from zotero_annotator.config import get_settings
+from zotero_annotator.config import get_core_settings
 from zotero_annotator.pipeline import AnnotationMode, run_no_translation
 from zotero_annotator.services.paragraphs import extract_paragraphs
 
@@ -27,7 +27,7 @@ def search(
     limit_per_page: int = typer.Option(100, "--limit-per-page", help="Page size for listing / 1ページの取得件数"),
 ) -> None:
     """Count items tagged in Zotero (タグ付き論文の件数を数える)."""
-    settings = get_settings()
+    settings = get_core_settings()
     target_tag = tag or settings.z_target_tag
 
     zotero = ZoteroClient(
@@ -72,13 +72,13 @@ def run(
     if max_paragraphs_per_item < 1:
         raise typer.BadParameter("--max-paragraphs-per-item must be >= 1")
 
-    # Load runtime settings from .env (.env から実行設定を読み込む)
-    settings = get_settings()
-
     # Translation mode is not implemented yet (翻訳モードは未実装)
     if not no_translate:
         console.print("[yellow]Translation pipeline is not implemented yet.[/yellow] Use --no-translate for now.")
         raise typer.Exit(code=2)
+
+    # Load runtime settings for no-translation mode (.env から翻訳なし実行設定を読み込む)
+    settings = get_core_settings()
 
     # Run no-translation pipeline (翻訳なしパイプラインを実行)
     results = run_no_translation(
@@ -117,11 +117,98 @@ def dev_annotate(
     if paragraph_index < 0:
         raise typer.BadParameter("--paragraph-index must be >= 0")
 
-    # Temporary scaffold output (暫定スキャフォールド出力)
-    console.print(
-        "[yellow]dev annotate is scaffolded but not fully implemented yet.[/yellow]\n"
-        f"item_key={item_key} paragraph_index={paragraph_index} mode={'read-only' if read_only else 'write'}"
+    # Load settings and create clients (設定読み込みとクライアント作成)
+    settings = get_core_settings()
+    zotero = ZoteroClient(
+        base_url=settings.zotero_base_url,
+        api_key=settings.z_api_key,
+        scope=settings.z_scope,
+        library_id=settings.z_id,
     )
+    grobid = GrobidClient(
+        base_url=settings.grobid_url,
+        timeout_seconds=settings.grobid_timeout_seconds,
+    )
+    try:
+        # Resolve PDF attachment from the target item (対象アイテムからPDF添付を解決)
+        children = zotero.list_children(item_key)
+        pdf = zotero.pick_pdf_attachment(children)
+        if not pdf:
+            raise typer.BadParameter("No PDF attachment found for --item-key")
+        pdf_key = pdf.get("key") or ""
+
+        # Download PDF and extract paragraphs via GROBID (PDF取得→GROBIDで段落抽出)
+        pdf_bytes = zotero.download_attachment(zotero.build_file_url(pdf_key))
+        tei_xml = grobid.process_fulltext(pdf_bytes, tei_coordinates="p")
+        paragraphs = extract_paragraphs(
+            tei_xml,
+            min_chars=settings.para_min_chars,
+            max_chars=settings.para_max_chars,
+        )
+
+        # Validate selected paragraph index (指定段落インデックスの妥当性確認)
+        if paragraph_index >= len(paragraphs):
+            raise typer.BadParameter(
+                f"--paragraph-index out of range: {paragraph_index} (paragraphs={len(paragraphs)})"
+            )
+        p = paragraphs[paragraph_index]
+        dedup_tag = f"{settings.dedup_tag_prefix}{p.hash}"
+
+        # Check duplication by para:<hash> tag (para:<hash> で重複判定)
+        existing = zotero.list_annotations(parent_key=pdf_key)
+        existing_tags = set()
+        for ann in existing:
+            for t in zotero.extract_tag_names(ann):
+                existing_tags.add(t)
+        if dedup_tag in existing_tags:
+            console.print(f"[yellow]SKIP[/yellow] duplicate paragraph tag found: {dedup_tag}")
+            return
+
+        # Build note annotation position (note用の位置情報を生成: 左の小矩形12x12)
+        page_index = max((p.page or 1) - 1, 0)
+        if p.coords:
+            page = p.coords[0].page
+            same_page = [c for c in p.coords if c.page == page]
+            x1 = min(c.x for c in same_page)
+            y1 = min(c.y for c in same_page)
+            page_index = max(page - 1, 0)
+        else:
+            x1 = 595 * 0.1
+            y1 = 842 * 0.9
+
+        icon_w = 12
+        icon_h = 12
+        annotation_position = {
+            "pageIndex": page_index,
+            "rects": [[x1, y1, x1 + icon_w, y1 + icon_h]],
+            "rotation": 0,
+        }
+        annotation_sort_index = f"{page_index:05d}|000000|{int(round(y1)):05d}"
+
+        payload = {
+            "itemType": "annotation",
+            "parentItem": pdf_key,
+            "annotationType": "note",
+            "annotationComment": p.text,
+            "annotationPosition": json.dumps(annotation_position),
+            "annotationPageLabel": str(page_index + 1),
+            "annotationSortIndex": annotation_sort_index,
+            "tags": [{"tag": dedup_tag}, {"tag": "grobid-auto"}],
+        }
+
+        # Read-only prints payload; write creates one annotation (read-onlyは表示のみ、writeは1件作成)
+        if read_only:
+            console.print("[cyan]READ-ONLY: planned single annotation payload[/cyan]")
+            console.print_json(json.dumps(payload, ensure_ascii=False))
+            return
+
+        zotero.create_annotations([payload])
+        console.print("[green]DONE[/green] 1 annotation created")
+        console.print(f"item_key={item_key} paragraph_index={paragraph_index} tag={dedup_tag}")
+    finally:
+        # Ensure clients are closed (クライアントを確実にクローズ)
+        grobid.close()
+        zotero.close()
 
 
 # Dev command to list target papers quickly (対象論文を確認する開発用コマンド)
@@ -135,7 +222,7 @@ def dev_items(
         raise typer.BadParameter("--max-items must be >= 1")
 
     # Load settings and build client (設定読み込みとクライアント作成)
-    settings = get_settings()
+    settings = get_core_settings()
     target_tag = tag or settings.z_target_tag
     zotero = ZoteroClient(
         base_url=settings.zotero_base_url,
@@ -166,7 +253,7 @@ def dev_grobid(
     out: Optional[Path] = typer.Option(None, "--out", help="Output TEI path / TEI出力先"),
 ) -> None:
     # Load settings and create clients (設定読み込みとクライアント作成)
-    settings = get_settings()
+    settings = get_core_settings()
     zotero = ZoteroClient(
         base_url=settings.zotero_base_url,
         api_key=settings.z_api_key,
@@ -219,7 +306,7 @@ def dev_paragraphs(
         raise typer.BadParameter("Specify exactly one of --item-key or --tei")
 
     # Load settings (設定を読み込む)
-    settings = get_settings()
+    settings = get_core_settings()
     tei_xml: str
 
     # Load TEI from file or fetch from Zotero+GROBID (TEIをファイル入力またはZotero+GROBIDから取得)
