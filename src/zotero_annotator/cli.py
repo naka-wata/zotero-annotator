@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 from typing import Optional
 
+import httpx
 import typer
 from rich.console import Console
 
@@ -117,6 +118,11 @@ def dev_annotate(
     if paragraph_index < 0:
         raise typer.BadParameter("--paragraph-index must be >= 0")
 
+    # Print a staged error and exit with non-zero code (段階別エラーを表示して終了)
+    def fail(stage: str, detail: str) -> None:
+        console.print(f"[red]ERROR[/red] {stage}: {detail}")
+        raise typer.Exit(code=1)
+
     # Load settings and create clients (設定読み込みとクライアント作成)
     settings = get_core_settings()
     zotero = ZoteroClient(
@@ -130,38 +136,72 @@ def dev_annotate(
         timeout_seconds=settings.grobid_timeout_seconds,
     )
     try:
+        # Check target item existence early (対象アイテムの存在を先に確認)
+        try:
+            item = zotero.get_item(item_key)
+        except httpx.HTTPStatusError as exc:
+            status = exc.response.status_code if exc.response is not None else "unknown"
+            fail("Zotero item lookup failed", f"item_key={item_key} status={status}")
+        except httpx.HTTPError as exc:
+            fail("Zotero connection failed", f"item_key={item_key} detail={exc}")
+
+        item_title = (item.get("data") or {}).get("title") or ""
+
         # Resolve PDF attachment from the target item (対象アイテムからPDF添付を解決)
-        children = zotero.list_children(item_key)
+        try:
+            children = zotero.list_children(item_key)
+        except httpx.HTTPError as exc:
+            fail("Zotero connection failed", f"children fetch failed item_key={item_key} detail={exc}")
+
         pdf = zotero.pick_pdf_attachment(children)
         if not pdf:
-            raise typer.BadParameter("No PDF attachment found for --item-key")
+            fail("PDF attachment missing", f"item_key={item_key}")
         pdf_key = pdf.get("key") or ""
 
         # Download PDF and extract paragraphs via GROBID (PDF取得→GROBIDで段落抽出)
-        pdf_bytes = zotero.download_attachment(zotero.build_file_url(pdf_key))
-        tei_xml = grobid.process_fulltext(pdf_bytes, tei_coordinates="p")
+        try:
+            pdf_bytes = zotero.download_attachment(zotero.build_file_url(pdf_key))
+        except httpx.HTTPError as exc:
+            fail("Zotero connection failed", f"pdf download failed pdf_key={pdf_key} detail={exc}")
+
+        try:
+            tei_xml = grobid.process_fulltext(pdf_bytes, tei_coordinates="p")
+        except httpx.HTTPError as exc:
+            fail("GROBID failed", f"pdf_key={pdf_key} detail={exc}")
+
         paragraphs = extract_paragraphs(
             tei_xml,
             min_chars=settings.para_min_chars,
             max_chars=settings.para_max_chars,
         )
 
+        if not paragraphs:
+            fail("No paragraphs extracted", f"item_key={item_key} pdf_key={pdf_key} paragraphs=0")
+
         # Validate selected paragraph index (指定段落インデックスの妥当性確認)
         if paragraph_index >= len(paragraphs):
-            raise typer.BadParameter(
-                f"--paragraph-index out of range: {paragraph_index} (paragraphs={len(paragraphs)})"
+            fail(
+                "Paragraph index out of range",
+                f"item_key={item_key} paragraph_index={paragraph_index} paragraphs={len(paragraphs)}",
             )
         p = paragraphs[paragraph_index]
         dedup_tag = f"{settings.dedup_tag_prefix}{p.hash}"
 
         # Check duplication by para:<hash> tag (para:<hash> で重複判定)
-        existing = zotero.list_annotations(parent_key=pdf_key)
+        try:
+            existing = zotero.list_annotations(parent_key=pdf_key)
+        except httpx.HTTPError as exc:
+            fail("Zotero connection failed", f"annotations fetch failed pdf_key={pdf_key} detail={exc}")
+
         existing_tags = set()
         for ann in existing:
             for t in zotero.extract_tag_names(ann):
                 existing_tags.add(t)
         if dedup_tag in existing_tags:
             console.print(f"[yellow]SKIP[/yellow] duplicate paragraph tag found: {dedup_tag}")
+            console.print(
+                f"item_key={item_key} pdf_key={pdf_key} paragraph_index={paragraph_index} page={p.page} hash={p.hash}"
+            )
             return
 
         # Build note annotation position (note用の位置情報を生成: 左の小矩形12x12)
@@ -199,12 +239,21 @@ def dev_annotate(
         # Read-only prints payload; write creates one annotation (read-onlyは表示のみ、writeは1件作成)
         if read_only:
             console.print("[cyan]READ-ONLY: planned single annotation payload[/cyan]")
+            console.print(
+                f"item_key={item_key} pdf_key={pdf_key} paragraph_index={paragraph_index} page={p.page} hash={p.hash} title={item_title}"
+            )
             console.print_json(json.dumps(payload, ensure_ascii=False))
             return
 
-        zotero.create_annotations([payload])
+        try:
+            zotero.create_annotations([payload])
+        except httpx.HTTPError as exc:
+            fail("Annotation creation failed", f"pdf_key={pdf_key} paragraph_index={paragraph_index} detail={exc}")
+
         console.print("[green]DONE[/green] 1 annotation created")
-        console.print(f"item_key={item_key} paragraph_index={paragraph_index} tag={dedup_tag}")
+        console.print(
+            f"item_key={item_key} pdf_key={pdf_key} paragraph_index={paragraph_index} page={p.page} hash={p.hash} tag={dedup_tag}"
+        )
     finally:
         # Ensure clients are closed (クライアントを確実にクローズ)
         grobid.close()
