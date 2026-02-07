@@ -65,7 +65,7 @@ Preview without writing annotations:
 注釈を作成せずに確認する場合:
 
 ```bash
-zotero-annotator run --dry-run
+zotero-annotator run --read-only
 ```
 
 Process a small batch:  
