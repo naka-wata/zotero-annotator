@@ -12,6 +12,7 @@ from zotero_annotator.clients.grobid import GrobidClient
 from zotero_annotator.clients.zotero import ZoteroClient
 from zotero_annotator.config import get_core_settings
 from zotero_annotator.pipeline import AnnotationMode, run_no_translation
+from zotero_annotator.services.annotation_position import build_note_position
 from zotero_annotator.services.paragraphs import extract_paragraphs
 
 
@@ -200,39 +201,26 @@ def dev_annotate(
         if dedup_tag in existing_tags:
             console.print(f"[yellow]SKIP[/yellow] duplicate paragraph tag found: {dedup_tag}")
             console.print(
-                f"item_key={item_key} pdf_key={pdf_key} paragraph_index={paragraph_index} page={p.page} hash={p.hash}"
+                f"[bold white]item_key[/bold white]=[cyan]{item_key}[/cyan] "
+                f"[bold white]pdf_key[/bold white]=[cyan]{pdf_key}[/cyan] "
+                f"[bold white]paragraph_index[/bold white]=[green]{paragraph_index}[/green] "
+                f"[bold white]page[/bold white]=[green]{p.page}[/green] "
+                f"[bold white]hash[/bold white]=[magenta]{p.hash}[/magenta]",
+                highlight=False,
             )
             return
 
         # Build note annotation position (note用の位置情報を生成: 左の小矩形12x12)
-        page_index = max((p.page or 1) - 1, 0)
-        if p.coords:
-            page = p.coords[0].page
-            same_page = [c for c in p.coords if c.page == page]
-            x1 = min(c.x for c in same_page)
-            y1 = min(c.y for c in same_page)
-            page_index = max(page - 1, 0)
-        else:
-            x1 = 595 * 0.1
-            y1 = 842 * 0.9
-
-        icon_w = 12
-        icon_h = 12
-        annotation_position = {
-            "pageIndex": page_index,
-            "rects": [[x1, y1, x1 + icon_w, y1 + icon_h]],
-            "rotation": 0,
-        }
-        annotation_sort_index = f"{page_index:05d}|000000|{int(round(y1)):05d}"
+        note_pos = build_note_position(p)
 
         payload = {
             "itemType": "annotation",
             "parentItem": pdf_key,
             "annotationType": "note",
             "annotationComment": p.text,
-            "annotationPosition": json.dumps(annotation_position),
-            "annotationPageLabel": str(page_index + 1),
-            "annotationSortIndex": annotation_sort_index,
+            "annotationPosition": json.dumps(note_pos.annotation_position),
+            "annotationPageLabel": str(note_pos.page_index + 1),
+            "annotationSortIndex": note_pos.annotation_sort_index,
             "tags": [{"tag": dedup_tag}, {"tag": "grobid-auto"}],
         }
 
@@ -240,7 +228,13 @@ def dev_annotate(
         if read_only:
             console.print("[cyan]READ-ONLY: planned single annotation payload[/cyan]")
             console.print(
-                f"item_key={item_key} pdf_key={pdf_key} paragraph_index={paragraph_index} page={p.page} hash={p.hash} title={item_title}"
+                f"[bold white]item_key[/bold white]=[cyan]{item_key}[/cyan] "
+                f"[bold white]pdf_key[/bold white]=[cyan]{pdf_key}[/cyan] "
+                f"[bold white]paragraph_index[/bold white]=[green]{paragraph_index}[/green] "
+                f"[bold white]page[/bold white]=[green]{p.page}[/green] "
+                f"[bold white]hash[/bold white]=[magenta]{p.hash}[/magenta] "
+                f"[bold white]title[/bold white]=[yellow]{item_title}[/yellow]",
+                highlight=False,
             )
             console.print_json(json.dumps(payload, ensure_ascii=False))
             return
@@ -252,7 +246,13 @@ def dev_annotate(
 
         console.print("[green]DONE[/green] 1 annotation created")
         console.print(
-            f"item_key={item_key} pdf_key={pdf_key} paragraph_index={paragraph_index} page={p.page} hash={p.hash} tag={dedup_tag}"
+            f"[bold white]item_key[/bold white]=[cyan]{item_key}[/cyan] "
+            f"[bold white]pdf_key[/bold white]=[cyan]{pdf_key}[/cyan] "
+            f"[bold white]paragraph_index[/bold white]=[green]{paragraph_index}[/green] "
+            f"[bold white]page[/bold white]=[green]{p.page}[/green] "
+            f"[bold white]hash[/bold white]=[magenta]{p.hash}[/magenta] "
+            f"[bold white]tag[/bold white]=[yellow]{dedup_tag}[/yellow]",
+            highlight=False,
         )
     finally:
         # Ensure clients are closed (クライアントを確実にクローズ)
