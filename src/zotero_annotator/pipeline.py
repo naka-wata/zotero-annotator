@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from typing import Any, Dict, List, Literal, Optional, Set
+from typing import Any, Dict, List, Literal, Optional, Sequence, Set
+
+import httpx
 
 from zotero_annotator.clients.grobid import GrobidClient
 from zotero_annotator.clients.zotero import ZoteroClient
@@ -37,6 +39,7 @@ def run_no_translation(
     max_paragraphs_per_item: int,
     annotation_mode: AnnotationMode = "note",
     override_tag: Optional[str] = None,
+    item_keys: Optional[Sequence[str]] = None,
 ) -> List[ItemResult]:
     """
     No-translation pipeline (翻訳なしパイプライン).
@@ -46,8 +49,6 @@ def run_no_translation(
     - Parse paragraphs via GROBID TEI (GROBID TEIから段落抽出)
     - Create note/highlight annotations with para:<hash> tag (注釈作成＋重複防止タグ)
     """
-    tag = override_tag or settings.z_target_tag
-
     zotero = ZoteroClient(
         base_url=settings.zotero_base_url,
         api_key=settings.z_api_key,
@@ -61,20 +62,57 @@ def run_no_translation(
 
     results: List[ItemResult] = []
     try:
-        for index, item in enumerate(zotero.iter_items_by_tag(tag=tag, limit_per_page=100)):
-            if index >= max_items:
-                break
-            results.append(
-                process_item_no_translation(
-                    settings,
-                    zotero=zotero,
-                    grobid=grobid,
-                    item=item,
-                    dry_run=dry_run,
-                    max_paragraphs=max_paragraphs_per_item,
-                    annotation_mode=annotation_mode,
+        if item_keys:
+            # Keep item-key order and skip duplicated keys (指定順を維持し重複キーを除外)
+            seen: Set[str] = set()
+            ordered_keys = [k for k in item_keys if k and not (k in seen or seen.add(k))]
+            for index, item_key in enumerate(ordered_keys):
+                if index >= max_items:
+                    break
+                try:
+                    item = zotero.get_item(item_key)
+                except httpx.HTTPError:
+                    results.append(
+                        ItemResult(
+                            item_key=item_key,
+                            title=item_key,
+                            pdf_key=None,
+                            paragraphs_total=0,
+                            paragraphs_skipped_duplicate=0,
+                            paragraphs_processed=0,
+                            annotations_planned=0,
+                            annotations_created=0,
+                            skipped_reason="item_lookup_failed",
+                        )
+                    )
+                    continue
+                results.append(
+                    process_item_no_translation(
+                        settings,
+                        zotero=zotero,
+                        grobid=grobid,
+                        item=item,
+                        dry_run=dry_run,
+                        max_paragraphs=max_paragraphs_per_item,
+                        annotation_mode=annotation_mode,
+                    )
                 )
-            )
+        else:
+            tag = override_tag or settings.z_target_tag
+            for index, item in enumerate(zotero.iter_items_by_tag(tag=tag, limit_per_page=100)):
+                if index >= max_items:
+                    break
+                results.append(
+                    process_item_no_translation(
+                        settings,
+                        zotero=zotero,
+                        grobid=grobid,
+                        item=item,
+                        dry_run=dry_run,
+                        max_paragraphs=max_paragraphs_per_item,
+                        annotation_mode=annotation_mode,
+                    )
+                )
     finally:
         grobid.close()
         zotero.close()

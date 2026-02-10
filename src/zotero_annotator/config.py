@@ -37,6 +37,7 @@ class CoreSettings(_BaseEnvSettings):
     dedup_tag_prefix: str = "para:"
     para_min_chars: int = Field(60, alias="PARA_MIN_CHARS")
     para_max_chars: int = Field(1500, alias="PARA_MAX_CHARS")
+    run_max_paragraphs_per_item: int = Field(3, alias="RUN_MAX_PARAGRAPHS_PER_ITEM")
 
     # Logging
     log_level: str = Field("INFO", min_length=1, alias="LOG_LEVEL")

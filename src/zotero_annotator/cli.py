@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Optional
+from typing import List, Optional
 
 import httpx
 import typer
@@ -11,7 +11,7 @@ from rich.console import Console
 from zotero_annotator.clients.grobid import GrobidClient
 from zotero_annotator.clients.zotero import ZoteroClient
 from zotero_annotator.config import get_core_settings
-from zotero_annotator.pipeline import AnnotationMode, run_no_translation
+from zotero_annotator.pipeline import run_no_translation
 from zotero_annotator.services.annotation_position import build_note_position
 from zotero_annotator.services.paragraphs import extract_paragraphs
 
@@ -22,13 +22,16 @@ app.add_typer(dev_app, name="dev")
 console = Console()
 
 
-# Search command to count items with a target tag (対象タグ付きアイテムの件数を数えるコマンド)
+# Search command to list target papers quickly (対象論文を確認する検索コマンド)
 @app.command()
 def search(
     tag: Optional[str] = typer.Option(None, "--tag", help="Target tag override / 対象タグを上書き"),
-    limit_per_page: int = typer.Option(100, "--limit-per-page", help="Page size for listing / 1ページの取得件数"),
+    max_items: int = typer.Option(20, "--max-items", help="Max items to display / 表示する最大件数"),
 ) -> None:
-    """Count items tagged in Zotero (タグ付き論文の件数を数える)."""
+    """List items tagged in Zotero (タグ付き論文の一覧を表示する)."""
+    if max_items < 1:
+        raise typer.BadParameter("--max-items must be >= 1")
+
     settings = get_core_settings()
     target_tag = tag or settings.z_target_tag
 
@@ -40,9 +43,20 @@ def search(
     )
     try:
         count = 0
-        for _ in zotero.iter_items_by_tag(tag=target_tag, limit_per_page=limit_per_page):
+        for item in zotero.iter_items_by_tag(tag=target_tag, limit_per_page=100):
             count += 1
-        console.print(f"{target_tag}: {count} items")
+            if count > max_items:
+                break
+            key = item.get("key") or ""
+            title = (item.get("data") or {}).get("title") or ""
+            tags = zotero.extract_tag_names(item)
+            tags_text = ", ".join(tags) if tags else "-"
+            console.print(
+                f"{count:>2}. [bold cyan]item-key[/bold cyan] : [cyan]{key}[/cyan]  "
+                f"[bold green]title[/bold green] : [green]{title}[/green]  "
+                f"[bold yellow]tags[/bold yellow] : [yellow]{tags_text}[/yellow]"
+            )
+        console.print(f"[cyan]tag={target_tag} displayed={min(count, max_items)}[/cyan]")
     finally:
         zotero.close()
 
@@ -51,45 +65,37 @@ def search(
 @app.command()
 def run(
     tag: Optional[str] = typer.Option(None, "--tag", help="Target tag override / 対象タグを上書き"),
+    item_keys: Optional[List[str]] = typer.Option(
+        None,
+        "--item-key",
+        help="Target item key (repeatable) / 対象item-key（複数指定可）",
+    ),
     max_items: int = typer.Option(10, "--max-items", help="Max papers per run / 1回の最大論文数"),
     read_only: bool = typer.Option(
         True, "--read-only/--write", help="Do not write to Zotero / Zoteroに書き込まない"
-    ),
-    no_translate: bool = typer.Option(
-        False, "--no-translate", help="Disable translation (dev) / 翻訳なしで実行（開発用）"
-    ),
-    max_paragraphs_per_item: int = typer.Option(
-        3, "--max-paragraphs-per-item", help="Max paragraphs per paper / 1論文あたりの最大段落数"
-    ),
-    annotation_mode: AnnotationMode = typer.Option(
-        "note",
-        "--annotation-mode",
-        help="Annotation mode / 注釈モード",
     ),
 ) -> None:
     
     # Validate numeric options (数値オプションのバリデーション)
     if max_items < 1:
         raise typer.BadParameter("--max-items must be >= 1")
-    if max_paragraphs_per_item < 1:
-        raise typer.BadParameter("--max-paragraphs-per-item must be >= 1")
-
-    # Translation mode is not implemented yet (翻訳モードは未実装)
-    if not no_translate:
-        console.print("[yellow]Translation pipeline is not implemented yet.[/yellow] Use --no-translate for now.")
-        raise typer.Exit(code=2)
+    if tag and item_keys:
+        raise typer.BadParameter("Specify either --tag or --item-key (repeatable), not both")
 
     # Load runtime settings for no-translation mode (.env から翻訳なし実行設定を読み込む)
     settings = get_core_settings()
+    if settings.run_max_paragraphs_per_item < 1:
+        raise typer.BadParameter("RUN_MAX_PARAGRAPHS_PER_ITEM must be >= 1")
 
     # Run no-translation pipeline (翻訳なしパイプラインを実行)
     results = run_no_translation(
         settings,
         dry_run=read_only,
         max_items=max_items,
-        max_paragraphs_per_item=max_paragraphs_per_item,
-        annotation_mode=annotation_mode,
+        max_paragraphs_per_item=settings.run_max_paragraphs_per_item,
+        annotation_mode="note",
         override_tag=tag,
+        item_keys=item_keys,
     )
 
     # Print per-item summary (論文ごとの実行結果を表示)
@@ -257,47 +263,6 @@ def dev_annotate(
     finally:
         # Ensure clients are closed (クライアントを確実にクローズ)
         grobid.close()
-        zotero.close()
-
-
-# Dev command to list target papers quickly (対象論文を確認する開発用コマンド)
-@dev_app.command("items")
-def dev_items(
-    tag: Optional[str] = typer.Option(None, "--tag", help="Target tag override / 対象タグを上書き"),
-    max_items: int = typer.Option(20, "--max-items", help="Max items to display / 表示する最大件数"),
-) -> None:
-    # Validate numeric options (数値オプションのバリデーション)
-    if max_items < 1:
-        raise typer.BadParameter("--max-items must be >= 1")
-
-    # Load settings and build client (設定読み込みとクライアント作成)
-    settings = get_core_settings()
-    target_tag = tag or settings.z_target_tag
-    zotero = ZoteroClient(
-        base_url=settings.zotero_base_url,
-        api_key=settings.z_api_key,
-        scope=settings.z_scope,
-        library_id=settings.z_id,
-    )
-    try:
-        # Iterate and print items (対象アイテムを走査して表示)
-        count = 0
-        for item in zotero.iter_items_by_tag(tag=target_tag, limit_per_page=100):
-            count += 1
-            if count > max_items:
-                break
-            key = item.get("key") or ""
-            title = (item.get("data") or {}).get("title") or ""
-            tags = zotero.extract_tag_names(item)
-            tags_text = ", ".join(tags) if tags else "-"
-            console.print(
-                f"{count:>2}. [bold cyan]item-key[/bold cyan] : [cyan]{key}[/cyan]  "
-                f"[bold green]title[/bold green] : [green]{title}[/green]  "
-                f"[bold yellow]tags[/bold yellow] : [yellow]{tags_text}[/yellow]"
-            )
-        console.print(f"[cyan]tag={target_tag} displayed={min(count, max_items)}[/cyan]")
-    finally:
-        # Ensure client is closed (クライアントを確実にクローズ)
         zotero.close()
 
 
