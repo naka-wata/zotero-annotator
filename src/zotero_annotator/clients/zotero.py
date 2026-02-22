@@ -49,6 +49,14 @@ class ZoteroClient:
             merged.update(headers)
         return self._client.put(url, headers=merged, json=json_body)
 
+    # Internal method to perform DELETE requests (DELETEリクエストを実行する)
+    def _delete(self, path: str, headers: Optional[Dict[str, str]] = None) -> httpx.Response:
+        url = f"{self.base_url}/{path.lstrip('/')}"
+        merged = self._headers()
+        if headers:
+            merged.update(headers)
+        return self._client.delete(url, headers=merged)
+
     # List items by tag (タグのついた論文をリストする)
     def list_items_by_tag(self, tag: str, limit: int = 25, start: int = 0) -> List[Dict[str, Any]]:
         params = {
@@ -106,15 +114,29 @@ class ZoteroClient:
         return resp.content
 
     # List annotations for a parent item (親アイテムの 注釈:annotation をリストする)
-    def list_annotations(self, parent_key: str) -> List[Dict[str, Any]]:
+    def list_annotations(self, parent_key: str, *, limit: int = 100, start: int = 0) -> List[Dict[str, Any]]:
         params = {
+            "include": "data",
             "itemType": "annotation",
             "parentItem": parent_key,
             "format": "json",
+            "limit": limit,
+            "start": start,
         }
         resp = self._get(f"{self._library_path()}/items", params=params)
         resp.raise_for_status()
         return resp.json()
+
+    # Iterate over all annotations with pagination (注釈をページングしながら全件取得する)
+    def iter_annotations(self, parent_key: str, limit_per_page: int = 100) -> Iterable[Dict[str, Any]]:
+        start = 0
+        while True:
+            items = self.list_annotations(parent_key=parent_key, limit=limit_per_page, start=start)
+            if not items:
+                break
+            for item in items:
+                yield item
+            start += len(items)
 
     # Create annotations (注釈:annotation を作成する)
     def create_annotations(self, annotations: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -129,7 +151,19 @@ class ZoteroClient:
             headers["If-Unmodified-Since-Version"] = str(version)
         resp = self._put(f"{self._library_path()}/items/{item_key}", json_body=data, headers=headers)
         resp.raise_for_status()
+        # Zotero update endpoints can return 204 No Content on success.
+        # (Zoteroの更新APIは成功時に204でボディなしの場合がある)
+        if resp.status_code == 204 or not resp.content:
+            return {}
         return resp.json()
+
+    # Delete an item with concurrency control (アイテムを安全に削除する)
+    def delete_item(self, item_key: str, version: Optional[int]) -> None:
+        headers: Dict[str, str] = {}
+        if version is not None:
+            headers["If-Unmodified-Since-Version"] = str(version)
+        resp = self._delete(f"{self._library_path()}/items/{item_key}", headers=headers)
+        resp.raise_for_status()
 
     # Update item tags safely (アイテムのタグを安全に更新する)
     def update_item_tags(self, item_key: str, tags: List[str]) -> Dict[str, Any]:

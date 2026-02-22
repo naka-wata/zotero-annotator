@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from functools import lru_cache
-from typing import Literal
+from typing import Literal, Optional
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -38,6 +38,8 @@ class CoreSettings(_BaseEnvSettings):
     para_min_chars: int = Field(60, alias="PARA_MIN_CHARS")
     para_max_chars: int = Field(1500, alias="PARA_MAX_CHARS")
     run_max_paragraphs_per_item: int = Field(3, alias="RUN_MAX_PARAGRAPHS_PER_ITEM")
+    run_delete_broken_annotations: bool = Field(False, alias="RUN_DELETE_BROKEN_ANNOTATIONS")
+    run_repair_broken_annotations: bool = Field(True, alias="RUN_REPAIR_BROKEN_ANNOTATIONS")
 
     # Logging
     log_level: str = Field("INFO", min_length=1, alias="LOG_LEVEL")
@@ -46,25 +48,19 @@ class CoreSettings(_BaseEnvSettings):
     zotero_base_url: str = "https://api.zotero.org"
 
 
-class TranslationSettings(_BaseEnvSettings):
-    # Gemini
-    gemini_api_key: str = Field(..., min_length=1, alias="GEMINI_API_KEY")
-    gemini_model: str = Field(..., min_length=1, alias="GEMINI_MODEL")
-    gemini_concurrency: int = Field(2, alias="GEMINI_CONCURRENCY")
-    gemini_timeout_seconds: int = Field(30, alias="GEMINI_TIMEOUT_SECONDS")
-    gemini_max_retries: int = Field(3, alias="GEMINI_MAX_RETRIES")
-    gemini_quota_stop: bool = Field(True, alias="GEMINI_QUOTA_STOP")
-    gemini_quota_exit_code: int = Field(10, alias="GEMINI_QUOTA_EXIT_CODE")
+class TranslatorSettings(_BaseEnvSettings):
+    # Translator selection and language settings (翻訳プロバイダ選択と言語設定)
+    translator_provider: Literal["deepl", "openai"] = Field(
+        "deepl", alias="TRANSLATOR_PROVIDER"
+    )
     target_lang: str = Field(..., min_length=1, alias="TARGET_LANG")
+    source_lang: Optional[str] = Field(None, alias="SOURCE_LANG")
 
 
-class Settings(CoreSettings, TranslationSettings):
-    pass
-
-
-@lru_cache
-def get_settings() -> Settings:
-    return Settings()
+class DeepLSettings(_BaseEnvSettings):
+    # DeepL API settings (DeepL API設定)
+    deepl_api_key: str = Field(..., min_length=1, alias="DEEPL_API_KEY")
+    deepl_api_url: str = Field("https://api-free.deepl.com", min_length=1, alias="DEEPL_API_URL")
 
 
 @lru_cache
@@ -73,5 +69,11 @@ def get_core_settings() -> CoreSettings:
 
 
 @lru_cache
-def get_translation_settings() -> TranslationSettings:
-    return TranslationSettings()
+def get_translation_settings() -> TranslatorSettings:
+    # Backward compatible name: this returns translator selection + language config.
+    return TranslatorSettings()
+
+
+@lru_cache
+def get_deepl_settings() -> DeepLSettings:
+    return DeepLSettings()

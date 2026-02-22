@@ -68,7 +68,10 @@ def _parse_coords(coords_str: str) -> List[ParagraphCoord]:
 
 # Extract paragraphs and optional coordinates from TEI XML (TEIから段落と座標を抽出)
 def extract_paragraphs(tei_xml: str, min_chars: int, max_chars: int) -> List[Paragraph]:
-    root = ET.fromstring(tei_xml)
+    try:
+        root = ET.fromstring(tei_xml)
+    except ET.ParseError as exc:
+        raise ValueError("Invalid TEI XML") from exc
     paragraphs: List[Paragraph] = []
 
     for elem in root.iter():
