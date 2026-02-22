@@ -1,40 +1,44 @@
 # 今日のTODO
 
 ## 目標
-- 1段落だけをZoteroにannotationとして書き込み、位置を調整できる状態にする。
+- `run --item-key` で指定した論文を、Zotero 7 で安定して annotation 作成できる状態にする（必要なら翻訳）。
 
 ## 現状の問題
-1. 🟨 実行環境の問題:
-   - `ModuleNotFoundError: zotero_annotator` は一部手順で再発するため、安定運用手順を確定する必要がある。
-2. ✅ CLIとドキュメントの不一致:
-   - オプション表記と実装の差分が再発しないよう、更新時にREADME/CLI仕様を同時更新する。
-3. ✅ 設定依存の強さ:
-   - `CoreSettings` と `TranslationSettings` に分離し、翻訳なし実行でGemini必須を回避済み。
+1. ☑ DeepL認証仕様変更対応:
+   - DeepLの header-based auth に切り替え済み。
+2. ☑ Zotero 7 側エラー対策（sortIndex NOT NULL）:
+   - note 注釈に `annotationSortIndex` / `annotationPosition` / `annotationPageLabel` を付与。
+3. ☑ 注釈一覧のページング不足:
+   - APIのデフォルト25件で止まっていたため、dedup/監査が誤っていた。ページング対応済み。
+4. ⬜ 失敗時ポリシー/再実行性:
+   - 途中失敗や部分成功が起きた時に、原因の可視化と再実行の手順をさらに明確化したい。
 
 ## 今日の計画（この順で実施）
-1. ✅ `dev annotate` の実行経路を確保する
-   - まずは1段落検証パスを確実に実行できる状態にする。
-   - 実施済み: `dev annotate` の入力チェック強化、段階別エラー表示、read-only/write責務の固定。
-2. ✅ 事前の疎通確認を行う
-   - GROBIDに接続できることを確認する。
-   - 対象ZoteroアイテムにPDF子アイテムがあることを確認する。
-3. ✅ read-onlyでpayloadを確認する
-   - `paragraph_index=0` を使う。
-   - `annotationPosition` と `annotationSortIndex` を目視確認する。
-4. ✅ 1段落だけwrite実行する
-   - 同じ入力でannotationを1件だけ実際に作成する。
-5. ✅ 重複防止を確認する
-   - 同条件で再実行し、重複がスキップされることを確認する。
+1. ☑ 翻訳インターフェースの導入
+   - `services/translators/base.py` / `factory.py` / `deepl.py` を追加。
+2. ☑ `pipeline.py` に翻訳呼び出しを接続
+   - `translator.translate()` の結果を annotation コメントに反映。
+3. ☑ `run` で「翻訳なし」確認モードを追加
+   - `run --no-translate` を追加し、API消費なしで書き込み検証可能にする。
+4. ☑ 監査・修復系 dev コマンドを追加
+   - `dev audit-annotations` / `dev repair-annotations` を追加。
+5. ☑ 「壊れ注釈」削除の自動化
+   - `RUN_DELETE_BROKEN_ANNOTATIONS` と `run --delete-broken` を追加。
+6. ⬜ 失敗の可視化を強化
+   - Zotero create の failed サンプル表示/再送ポリシーの調整（必要ならログ出力改善）。
 
 ## 次にやること
-1. ⬜ annotationの位置ズレ補正
-   - note矩形(12x12)の基準点・y方向補正を調整する。
-2. ✅ `dev items` 表示改善の反映確認
-   - `item-key / title / tags` の色付き表示が実行時に反映されることを確認する。
-3. ⬜ ドキュメント更新
-   - 実際に安定して動く実行手順を `README.md` / `CLI.md` に反映する。
+1. ⬜ OpenAI翻訳プロバイダを実装
+   - `TRANSLATOR_PROVIDER=openai` を実装して factory に接続する。
+2. ⬜ フォールバック連鎖を追加（任意）
+   - 例: `TRANSLATOR_CHAIN=deepl,openai` のように失敗時に切替。
+3. ⬜ 壊れ注釈の削除ポリシーを精緻化（任意）
+   - 削除対象の条件をより安全に（例: `para:` タグあり/なし、annotationType限定、dry-run表示の拡充）。
+4. ☑ ドキュメント同期
+   - `CLI.md` などは現行実装に追随済み。
 
 ## 完了条件
-- ✅ note annotationが1件、作成できる。
-- ✅ 同じ段落を再実行しても重複annotationが作成されない。
-- ⬜ 位置ズレが解消され、狙った位置に表示される。
+- `run --item-key ... --write --no-translate` で全段落の dedup タグが揃う。
+- `dev audit-annotations` で `missing dedup tags filtered=0` になる。
+- Zotero 7 の `NOT NULL constraint failed: itemAnnotations.sortIndex` が出ない。
+- `--translate` 有効時も、翻訳失敗の原因が分かる形で停止/スキップできる。
