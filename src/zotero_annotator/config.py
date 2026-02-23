@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from functools import lru_cache
-from typing import Literal, Optional
+from typing import Literal, Optional, Union
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -37,6 +37,29 @@ class CoreSettings(_BaseEnvSettings):
     dedup_tag_prefix: str = "para:"
     para_min_chars: int = Field(60, alias="PARA_MIN_CHARS")
     para_max_chars: int = Field(1500, alias="PARA_MAX_CHARS")
+    # Filter out non-body text like plot axis labels by coordinate height (h).
+    # 0 disables the filter. Typical body lines are ~8-10 in this PDF.
+    para_min_median_coord_h: Union[float, Literal["auto"]] = Field(0.0, alias="PARA_MIN_MEDIAN_COORD_H")
+    # When PARA_MIN_MEDIAN_COORD_H=auto, compute threshold as (q75 * ratio).
+    para_min_median_coord_h_auto_ratio: float = Field(0.7, alias="PARA_MIN_MEDIAN_COORD_H_AUTO_RATIO")
+    para_merge_splits: bool = Field(False, alias="PARA_MERGE_SPLITS")
+    para_formula_placeholder: str = Field("[MATH]", min_length=1, alias="PARA_FORMULA_PLACEHOLDER")
+    # Insert newlines around [MATH] (n) tokens for readability.
+    para_math_newlines: bool = Field(False, alias="PARA_MATH_NEWLINES")
+    # Treat very short connector-only paragraphs (e.g., "where") specially: merge before filtering.
+    para_connector_max_chars: int = Field(20, ge=1, alias="PARA_CONNECTOR_MAX_CHARS")
+    # Skip algorithm/pseudocode blocks (e.g., "Algorithm 1 ...") to avoid noisy notes.
+    para_skip_algorithms: bool = Field(False, alias="PARA_SKIP_ALGORITHMS")
+    # Strip plot/axis label noise that sometimes appears before "Figure N:" in a paragraph.
+    para_strip_plot_axis_prefix: bool = Field(False, alias="PARA_STRIP_PLOT_AXIS_PREFIX")
+    # Skip figure/table captions as standalone notes (e.g., "Figure 4: ...", "Table 1: ...").
+    # If a caption is mixed with prose in the same paragraph, the caption prefix is removed and the prose is kept.
+    para_skip_captions: bool = Field(False, alias="PARA_SKIP_CAPTIONS")
+
+    # Annotation output mode (what to create in Zotero)
+    # - note: create note annotations (default)
+    # - highlight: create a small fixed highlight rectangle (debug / minimal marking)
+    annotation_mode: Literal["note", "highlight"] = Field("note", alias="ANNOTATION_MODE")
     run_max_paragraphs_per_item: int = Field(3, alias="RUN_MAX_PARAGRAPHS_PER_ITEM")
     run_delete_broken_annotations: bool = Field(False, alias="RUN_DELETE_BROKEN_ANNOTATIONS")
     run_repair_broken_annotations: bool = Field(True, alias="RUN_REPAIR_BROKEN_ANNOTATIONS")

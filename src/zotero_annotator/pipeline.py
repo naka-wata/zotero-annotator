@@ -14,7 +14,7 @@ from zotero_annotator.services.paragraphs import Paragraph, extract_paragraphs
 from zotero_annotator.services.translators.base import TranslationError, Translator
 
 
-AnnotationMode = Literal["note", "highlight_fixed"]
+AnnotationMode = Literal["note", "highlight"]
 
 
 @dataclass
@@ -219,6 +219,15 @@ def process_item_no_translation(
             tei_xml,
             min_chars=settings.para_min_chars,
             max_chars=settings.para_max_chars,
+            merge_splits=settings.para_merge_splits,
+            formula_placeholder=settings.para_formula_placeholder,
+            min_median_coord_h=settings.para_min_median_coord_h,
+            min_median_coord_h_auto_ratio=settings.para_min_median_coord_h_auto_ratio,
+            connector_max_chars=settings.para_connector_max_chars,
+            math_newlines=settings.para_math_newlines,
+            skip_algorithms=settings.para_skip_algorithms,
+            strip_plot_axis_prefix=settings.para_strip_plot_axis_prefix,
+            skip_captions=settings.para_skip_captions,
         )
     except ValueError as exc:
         return ItemResult(
@@ -306,14 +315,21 @@ def process_item_no_translation(
 
     for p in paragraphs[:max_paragraphs]:
         processed += 1
-        dedup_tag = f"{settings.dedup_tag_prefix}{p.hash}"
-        if dedup_tag in existing_tags:
+        dedup_tags = [f"{settings.dedup_tag_prefix}{h}" for h in (p.dedup_hashes or [p.hash])]
+        if any(t in existing_tags for t in dedup_tags):
             dup += 1
             continue
-        comment_text = p.text
+        source_text = p.text
+        comment_text = source_text
         if translator is not None:
             try:
-                comment_text = translator.translate(p.text, source_lang=source_lang, target_lang=target_lang).text
+                comment_text = translator.translate(source_text, source_lang=source_lang, target_lang=target_lang).text
+                comment_text = _maybe_append_source_snippet(
+                    translated=comment_text,
+                    source=source_text,
+                    enabled=True,
+                    chars=_SOURCE_SNIPPET_CHARS,
+                )
             except TranslationError as exc:
                 # Avoid partial mixed-language annotations; treat translation errors as fatal for the item.
                 # (翻訳エラー時に中途半端に注釈を作らない)
@@ -333,11 +349,11 @@ def process_item_no_translation(
                 paragraph=p,
                 comment_text=comment_text,
                 pdf_key=pdf_key,
-                dedup_tag=dedup_tag,
+                dedup_tags=dedup_tags,
                 annotation_mode=annotation_mode,
             )
         )
-        planned_dedup_tags.add(dedup_tag)
+        planned_dedup_tags.update(dedup_tags)
 
     created = 0
     if planned_payloads and not dry_run:
@@ -363,7 +379,7 @@ def process_item_no_translation(
     if not dry_run:
         # If we intentionally limited processing, do not finalize (一部だけ処理するモードでは完了扱いにしない)
         if max_paragraphs >= len(paragraphs):
-            required = {f"{settings.dedup_tag_prefix}{p.hash}" for p in paragraphs}
+            required = {f"{settings.dedup_tag_prefix}{h}" for p in paragraphs for h in (p.dedup_hashes or [p.hash])}
             available = set(existing_tags) | set(planned_dedup_tags)
             all_done = required.issubset(available)
             if all_done:
@@ -468,13 +484,14 @@ def repair_broken_annotations_for_pdf(
 
     pos_by_tag: Dict[str, Dict[str, str]] = {}
     for p in paragraphs:
-        tag = f"{dedup_prefix}{p.hash}"
         note_pos = build_note_position(p)
-        pos_by_tag[tag] = {
+        patch = {
             "annotationPosition": json.dumps(note_pos.annotation_position),
             "annotationPageLabel": str(note_pos.page_index + 1),
             "annotationSortIndex": note_pos.annotation_sort_index,
         }
+        for h in (p.dedup_hashes or [p.hash]):
+            pos_by_tag[f"{dedup_prefix}{h}"] = patch
 
     for ann in zotero.iter_annotations(parent_key=pdf_key, limit_per_page=100):
         ann_key = ann.get("key") or ""
@@ -603,12 +620,34 @@ def collect_existing_tags(zotero: ZoteroClient, pdf_key: str) -> Set[str]:
     return out
 
 
+_SOURCE_SNIPPET_CHARS = 10
+
+
+def _build_source_snippet(text: str, *, chars: int) -> str:
+    s = " ".join((text or "").split()).strip()
+    if not s:
+        return ""
+    if len(s) <= (chars * 2 + 10):
+        return s
+    head = s[:chars].rstrip()
+    tail = s[-chars:].lstrip()
+    return f"{head} … {tail}"
+
+
+def _maybe_append_source_snippet(*, translated: str, source: str, enabled: bool, chars: int) -> str:
+    # Backward-compatible wrapper: we now always include the snippet when translation is enabled.
+    snippet = _build_source_snippet(source, chars=chars)
+    if not snippet:
+        return translated
+    return f"{translated}\n\nSRC: {snippet}"
+
+
 def build_annotation_payload(
     *,
     paragraph: Paragraph,
     comment_text: str,
     pdf_key: str,
-    dedup_tag: str,
+    dedup_tags: List[str],
     annotation_mode: AnnotationMode,
 ) -> Dict[str, Any]:
     # Build Zotero annotation payload (Zotero注釈ペイロード生成)
@@ -622,16 +661,12 @@ def build_annotation_payload(
             "annotationPosition": json.dumps(note_pos.annotation_position),
             "annotationPageLabel": str(note_pos.page_index + 1),
             "annotationSortIndex": note_pos.annotation_sort_index,
-            "tags": [{"tag": dedup_tag}, {"tag": "grobid-auto"}],
+            "tags": [{"tag": t} for t in dedup_tags] + [{"tag": "grobid-auto"}],
         }
 
-    # highlight_fixed: used only to test if position-based annotations work (位置付き注釈の疎通確認用)
-    page_index = max((paragraph.page or 1) - 1, 0)
-    annotation_position = {
-        "pageIndex": page_index,
-        "rects": [[10, 10, 20, 20]],
-        "rotation": 0,
-    }
+    # highlight: small fixed rectangle, but still requires pageLabel/sortIndex in Zotero 7.
+    note_pos = build_note_position(paragraph)
+    annotation_position = dict(note_pos.annotation_position)
 
     return {
         "itemType": "annotation",
@@ -639,6 +674,7 @@ def build_annotation_payload(
         "annotationType": "highlight",
         "annotationComment": comment_text,
         "annotationPosition": json.dumps(annotation_position),
-        "annotationPageLabel": str(page_index + 1),
-        "tags": [{"tag": dedup_tag}],
+        "annotationPageLabel": str(note_pos.page_index + 1),
+        "annotationSortIndex": note_pos.annotation_sort_index,
+        "tags": [{"tag": t} for t in dedup_tags],
     }

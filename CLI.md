@@ -52,6 +52,16 @@ zotero-annotator search --tag to-translate --max-items 5
 - 1論文あたりの段落上限は `.env` の `RUN_MAX_PARAGRAPHS_PER_ITEM` で設定
 - `.env` の `RUN_DELETE_BROKEN_ANNOTATIONS=1` を設定すると、`run --write` 前に自動で「壊れ注釈」を削除（既定: `0`）
 - `.env` の `RUN_REPAIR_BROKEN_ANNOTATIONS=1` を設定すると、`run --write` 前に `para:<hash>` で紐づけ可能な壊れ注釈を自動修復（既定: `1`）
+- `.env` の `PARA_MERGE_SPLITS=1` を設定すると、数式付近などで分断された段落を保守的に結合（既定: `0`）
+- `.env` の `PARA_FORMULA_PLACEHOLDER` で `<formula>` を置換する文字列を指定（既定: `[MATH]`）
+- `.env` の `PARA_MATH_NEWLINES=1` で、`[MATH] (n)` を前後改行して読みやすくする（既定: `0`）
+- `.env` の `PARA_MIN_MEDIAN_COORD_H` を設定すると、座標の文字高さ（h）の中央値が小さい段落（図中の軸ラベル等）を除外（既定: `0`=無効、`auto`=自動推定）
+- `.env` の `PARA_MIN_MEDIAN_COORD_H_AUTO_RATIO` は `auto` 時の比率（閾値= q75×ratio, 既定: `0.7`）
+- `.env` の `PARA_CONNECTOR_MAX_CHARS` 以下の接続語-only段落（例: `where`）は、`PARA_MIN_CHARS` 判定の前に前後へ吸収してからフィルタ
+- `.env` の `PARA_SKIP_ALGORITHMS=1` で、擬似コード（例: `Algorithm 1 ...`）のブロックを注釈対象から除外（既定: `0`）
+- `.env` の `PARA_STRIP_PLOT_AXIS_PREFIX=1` で、`Figure N:` の直前に混入した「図中の軸ラベル等の数値列」を除去（既定: `0`）
+- `.env` の `PARA_SKIP_CAPTIONS=1` で、図表キャプション段落（例: `Figure 4: ...`, `Table 1: ...`）を注釈対象から除外（既定: `0`）
+- `.env` の `ANNOTATION_MODE` で、Zoteroに作成する注釈タイプを切替（`note` / `highlight`、既定: `note`）
 - 「壊れ注釈」= `annotationSortIndex` / `annotationPageLabel` / `annotationPosition` のいずれかが欠けている注釈（Zotero 7 の `NOT NULL constraint failed: itemAnnotations.sortIndex` 対策）
 
 例:
@@ -84,6 +94,7 @@ TEIから段落抽出結果を確認します。
 - `--item-key KEY` または `--tei PATH` のどちらか一方を指定（同時指定不可）
 - `--out PATH`: JSON保存先（未指定時はコンソール表示）
 - `--max-rows INT`: 表示件数上限（既定: `20`）
+- `--debug-coord-h`: 座標hフィルタの閾値（auto時は推定値）と、各段落の `median_coord_h` を表示
 
 出力項目:
 
@@ -92,6 +103,7 @@ TEIから段落抽出結果を確認します。
 - `page`
 - `text`
 - `coords`
+- `median_coord_h`（`--debug-coord-h` 指定時のみ）
 
 例:
 

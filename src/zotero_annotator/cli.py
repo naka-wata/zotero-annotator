@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import statistics
 from pathlib import Path
 from typing import List, Optional
 
@@ -12,9 +13,9 @@ from rich.console import Console
 from zotero_annotator.clients.grobid import GrobidClient
 from zotero_annotator.clients.zotero import ZoteroClient
 from zotero_annotator.config import get_core_settings, get_translation_settings
-from zotero_annotator.pipeline import run_no_translation
+from zotero_annotator.pipeline import build_annotation_payload, run_no_translation
 from zotero_annotator.services.annotation_position import build_note_position
-from zotero_annotator.services.paragraphs import extract_paragraphs
+from zotero_annotator.services.paragraphs import estimate_coord_h_threshold, extract_paragraphs
 from zotero_annotator.services.translators.factory import build_translator
 from zotero_annotator.services.translators.base import TranslationError
 
@@ -23,6 +24,27 @@ app = typer.Typer(add_completion=False)
 dev_app = typer.Typer(help="Development helpers / 開発用コマンド")
 app.add_typer(dev_app, name="dev")
 console = Console()
+
+_SOURCE_SNIPPET_CHARS = 10
+
+
+def _build_source_snippet(text: str, *, chars: int) -> str:
+    s = " ".join((text or "").split()).strip()
+    if not s:
+        return ""
+    if len(s) <= (chars * 2 + 10):
+        return s
+    head = s[:chars].rstrip()
+    tail = s[-chars:].lstrip()
+    return f"{head} … {tail}"
+
+
+def _maybe_append_source_snippet(*, translated: str, source: str, enabled: bool, chars: int) -> str:
+    # Backward-compatible wrapper: we now always include the snippet when translation is enabled.
+    snippet = _build_source_snippet(source, chars=chars)
+    if not snippet:
+        return translated
+    return f"{translated}\n\nSRC: {snippet}"
 
 
 # Search command to list target papers quickly (対象論文を確認する検索コマンド)
@@ -130,7 +152,7 @@ def run(
             dry_run=read_only,
             max_items=max_items,
             max_paragraphs_per_item=settings.run_max_paragraphs_per_item,
-            annotation_mode="note",
+            annotation_mode=settings.annotation_mode,
             override_tag=tag,
             item_keys=item_keys,
             translator=translator,
@@ -168,6 +190,11 @@ def dev_annotate(
         False,
         "--translate/--no-translate",
         help="Translate before annotating / 注釈前に翻訳する",
+    ),
+    annotation_mode: Optional[str] = typer.Option(
+        None,
+        "--annotation-mode",
+        help="Override output mode (note/highlight) / 出力モード上書き",
     ),
 ) -> None:
     
@@ -234,6 +261,15 @@ def dev_annotate(
                 # (修復は取りこぼしを減らすため最小文字数を0にする)
                 min_chars=0,
                 max_chars=max(settings.para_max_chars, 20000),
+                merge_splits=settings.para_merge_splits,
+                formula_placeholder=settings.para_formula_placeholder,
+                min_median_coord_h=settings.para_min_median_coord_h,
+                min_median_coord_h_auto_ratio=settings.para_min_median_coord_h_auto_ratio,
+                connector_max_chars=settings.para_connector_max_chars,
+                math_newlines=settings.para_math_newlines,
+                skip_algorithms=settings.para_skip_algorithms,
+                strip_plot_axis_prefix=settings.para_strip_plot_axis_prefix,
+                skip_captions=settings.para_skip_captions,
             )
         except ValueError as exc:
             fail("TEI parse failed", str(exc))
@@ -248,17 +284,24 @@ def dev_annotate(
                 f"item_key={item_key} paragraph_index={paragraph_index} paragraphs={len(paragraphs)}",
             )
         p = paragraphs[paragraph_index]
-        dedup_tag = f"{settings.dedup_tag_prefix}{p.hash}"
+        dedup_tags = [f"{settings.dedup_tag_prefix}{h}" for h in (p.dedup_hashes or [p.hash])]
 
         # Optional: translate paragraph text for annotation comment (必要なら段落本文を翻訳して注釈コメントにする)
-        comment_text = p.text
+        source_text = p.text
+        comment_text = source_text
         if translate:
             tsettings = get_translation_settings()
             translator = build_translator()
             source_lang = (tsettings.source_lang or "").strip()
             target_lang = tsettings.target_lang
             try:
-                comment_text = translator.translate(p.text, source_lang=source_lang, target_lang=target_lang).text
+                comment_text = translator.translate(source_text, source_lang=source_lang, target_lang=target_lang).text
+                comment_text = _maybe_append_source_snippet(
+                    translated=comment_text,
+                    source=source_text,
+                    enabled=True,
+                    chars=_SOURCE_SNIPPET_CHARS,
+                )
             except TranslationError as exc:
                 fail("Translation failed", f"kind={exc.kind} provider={exc.provider} status={exc.status_code} detail={exc}")
 
@@ -272,8 +315,8 @@ def dev_annotate(
         for ann in existing:
             for t in zotero.extract_tag_names(ann):
                 existing_tags.add(t)
-        if dedup_tag in existing_tags:
-            console.print(f"[yellow]SKIP[/yellow] duplicate paragraph tag found: {dedup_tag}")
+        if any(t in existing_tags for t in dedup_tags):
+            console.print(f"[yellow]SKIP[/yellow] duplicate paragraph tag found: {dedup_tags[0]}")
             console.print(
                 f"[bold white]item_key[/bold white]=[cyan]{item_key}[/cyan] "
                 f"[bold white]pdf_key[/bold white]=[cyan]{pdf_key}[/cyan] "
@@ -284,19 +327,17 @@ def dev_annotate(
             )
             return
 
-        # Build note annotation position (note用の位置情報を生成: 左の小矩形12x12)
-        note_pos = build_note_position(p)
+        mode = (annotation_mode or settings.annotation_mode).strip()
+        if mode not in ("note", "highlight"):
+            raise typer.BadParameter("--annotation-mode must be one of: note, highlight")
 
-        payload = {
-            "itemType": "annotation",
-            "parentItem": pdf_key,
-            "annotationType": "note",
-            "annotationComment": comment_text,
-            "annotationPosition": json.dumps(note_pos.annotation_position),
-            "annotationPageLabel": str(note_pos.page_index + 1),
-            "annotationSortIndex": note_pos.annotation_sort_index,
-            "tags": [{"tag": dedup_tag}, {"tag": "grobid-auto"}],
-        }
+        payload = build_annotation_payload(
+            paragraph=p,
+            comment_text=comment_text,
+            pdf_key=pdf_key,
+            dedup_tags=dedup_tags,
+            annotation_mode=mode,  # type: ignore[arg-type]
+        )
 
         # Read-only prints payload; write creates one annotation (read-onlyは表示のみ、writeは1件作成)
         if read_only:
@@ -325,7 +366,7 @@ def dev_annotate(
             f"[bold white]paragraph_index[/bold white]=[green]{paragraph_index}[/green] "
             f"[bold white]page[/bold white]=[green]{p.page}[/green] "
             f"[bold white]hash[/bold white]=[magenta]{p.hash}[/magenta] "
-            f"[bold white]tag[/bold white]=[yellow]{dedup_tag}[/yellow]",
+            f"[bold white]tag[/bold white]=[yellow]{dedup_tags[0]}[/yellow]",
             highlight=False,
         )
     finally:
@@ -406,6 +447,15 @@ def dev_translate(
                 tei_xml,
                 min_chars=settings.para_min_chars,
                 max_chars=settings.para_max_chars,
+                merge_splits=settings.para_merge_splits,
+                formula_placeholder=settings.para_formula_placeholder,
+                min_median_coord_h=settings.para_min_median_coord_h,
+                min_median_coord_h_auto_ratio=settings.para_min_median_coord_h_auto_ratio,
+                connector_max_chars=settings.para_connector_max_chars,
+                math_newlines=settings.para_math_newlines,
+                skip_algorithms=settings.para_skip_algorithms,
+                strip_plot_axis_prefix=settings.para_strip_plot_axis_prefix,
+                skip_captions=settings.para_skip_captions,
             )
         except ValueError as exc:
             fail("TEI parse failed", str(exc))
@@ -509,6 +559,9 @@ def dev_paragraphs(
     tei: Optional[Path] = typer.Option(None, "--tei", help="Input TEI file path / TEI入力ファイル"),
     out: Optional[Path] = typer.Option(None, "--out", help="Output JSON path / JSON出力先"),
     max_rows: int = typer.Option(20, "--max-rows", help="Max rows to print / 表示する最大件数"),
+    debug_coord_h: bool = typer.Option(
+        False, "--debug-coord-h", help="Show coord-h threshold and per-paragraph median(h)"
+    ),
 ) -> None:
     # Validate inputs (入力オプションのバリデーション)
     if max_rows < 1:
@@ -561,27 +614,77 @@ def dev_paragraphs(
 
     # Extract and summarize paragraphs (段落抽出とサマリ表示)
     try:
+        if debug_coord_h:
+            coord_h = estimate_coord_h_threshold(
+                tei_xml,
+                min_chars=settings.para_min_chars,
+                formula_placeholder=settings.para_formula_placeholder,
+                min_median_coord_h=settings.para_min_median_coord_h,
+                min_median_coord_h_auto_ratio=settings.para_min_median_coord_h_auto_ratio,
+            )
+            console.print(
+                f"[cyan]coord_h_threshold={coord_h.threshold:.3f}[/cyan] method={coord_h.method} samples={coord_h.samples} q75={coord_h.q75} ratio={coord_h.ratio}",
+                highlight=False,
+            )
+
+            rows_all = extract_paragraphs(
+                tei_xml,
+                min_chars=settings.para_min_chars,
+                max_chars=settings.para_max_chars,
+                merge_splits=settings.para_merge_splits,
+                formula_placeholder=settings.para_formula_placeholder,
+                min_median_coord_h=0.0,
+                min_median_coord_h_auto_ratio=settings.para_min_median_coord_h_auto_ratio,
+                connector_max_chars=settings.para_connector_max_chars,
+                math_newlines=settings.para_math_newlines,
+                skip_algorithms=settings.para_skip_algorithms,
+                strip_plot_axis_prefix=settings.para_strip_plot_axis_prefix,
+                skip_captions=settings.para_skip_captions,
+            )
+        else:
+            rows_all = []
+
         rows = extract_paragraphs(
             tei_xml,
             min_chars=settings.para_min_chars,
             max_chars=settings.para_max_chars,
+            merge_splits=settings.para_merge_splits,
+            formula_placeholder=settings.para_formula_placeholder,
+            min_median_coord_h=settings.para_min_median_coord_h,
+            min_median_coord_h_auto_ratio=settings.para_min_median_coord_h_auto_ratio,
+            connector_max_chars=settings.para_connector_max_chars,
+            math_newlines=settings.para_math_newlines,
+            skip_algorithms=settings.para_skip_algorithms,
+            strip_plot_axis_prefix=settings.para_strip_plot_axis_prefix,
+            skip_captions=settings.para_skip_captions,
         )
     except ValueError as exc:
         fail("TEI parse failed", str(exc))
-    console.print(f"[cyan]paragraphs={len(rows)}[/cyan]")
+
+    if debug_coord_h:
+        console.print(
+            f"[cyan]paragraphs={len(rows)}[/cyan] (unfiltered={len(rows_all)} removed_by_coord_h={max(0, len(rows_all)-len(rows))})",
+            highlight=False,
+        )
+    else:
+        console.print(f"[cyan]paragraphs={len(rows)}[/cyan]")
 
     # Build preview payload (プレビュー用ペイロードを生成)
     preview = rows[:max_rows]
-    payload = [
-        {
+    payload = []
+    for i, p in enumerate(preview):
+        row = {
             "index": i,
             "hash": p.hash,
+            "dedup_hashes": p.dedup_hashes,
             "page": p.page,
             "text": p.text,
             "coords": [c.__dict__ for c in p.coords],
         }
-        for i, p in enumerate(preview)
-    ]
+        if debug_coord_h and p.coords:
+            hs = [c.h for c in p.coords]
+            row["median_coord_h"] = float(statistics.median(hs)) if hs else None
+        payload.append(row)
 
     # Output JSON to file or console (JSONをファイル出力またはコンソール表示)
     if out:
@@ -653,6 +756,15 @@ def dev_repair_annotations(
                 tei_xml,
                 min_chars=settings.para_min_chars,
                 max_chars=settings.para_max_chars,
+                merge_splits=settings.para_merge_splits,
+                formula_placeholder=settings.para_formula_placeholder,
+                min_median_coord_h=settings.para_min_median_coord_h,
+                min_median_coord_h_auto_ratio=settings.para_min_median_coord_h_auto_ratio,
+                connector_max_chars=settings.para_connector_max_chars,
+                math_newlines=settings.para_math_newlines,
+                skip_algorithms=settings.para_skip_algorithms,
+                strip_plot_axis_prefix=settings.para_strip_plot_axis_prefix,
+                skip_captions=settings.para_skip_captions,
             )
         except ValueError as exc:
             fail("TEI parse failed", str(exc))
@@ -660,13 +772,14 @@ def dev_repair_annotations(
         # Map para:<hash> -> computed position fields
         pos_by_tag = {}
         for p in paragraphs:
-            dedup_tag = f"{settings.dedup_tag_prefix}{p.hash}"
             note_pos = build_note_position(p)
-            pos_by_tag[dedup_tag] = {
+            patch = {
                 "annotationPosition": json.dumps(note_pos.annotation_position),
                 "annotationPageLabel": str(note_pos.page_index + 1),
                 "annotationSortIndex": note_pos.annotation_sort_index,
             }
+            for h in (p.dedup_hashes or [p.hash]):
+                pos_by_tag[f"{settings.dedup_tag_prefix}{h}"] = patch
 
         try:
             anns = list(zotero.iter_annotations(parent_key=pdf_key, limit_per_page=100))
@@ -866,17 +979,42 @@ def dev_audit_annotations(
                 tei_xml,
                 min_chars=settings.para_min_chars,
                 max_chars=settings.para_max_chars,
+                merge_splits=settings.para_merge_splits,
+                formula_placeholder=settings.para_formula_placeholder,
+                min_median_coord_h=settings.para_min_median_coord_h,
+                min_median_coord_h_auto_ratio=settings.para_min_median_coord_h_auto_ratio,
+                connector_max_chars=settings.para_connector_max_chars,
+                math_newlines=settings.para_math_newlines,
+                skip_algorithms=settings.para_skip_algorithms,
+                strip_plot_axis_prefix=settings.para_strip_plot_axis_prefix,
+                skip_captions=settings.para_skip_captions,
             )
             paras_all = extract_paragraphs(
                 tei_xml,
                 min_chars=0,
                 max_chars=max(settings.para_max_chars, 20000),
+                merge_splits=settings.para_merge_splits,
+                formula_placeholder=settings.para_formula_placeholder,
+                min_median_coord_h=settings.para_min_median_coord_h,
+                min_median_coord_h_auto_ratio=settings.para_min_median_coord_h_auto_ratio,
+                connector_max_chars=settings.para_connector_max_chars,
+                math_newlines=settings.para_math_newlines,
+                skip_algorithms=settings.para_skip_algorithms,
+                strip_plot_axis_prefix=settings.para_strip_plot_axis_prefix,
             )
         except ValueError as exc:
             fail("TEI parse failed", str(exc))
 
-        required_filtered = {f"{settings.dedup_tag_prefix}{p.hash}" for p in paras_filtered}
-        required_all = {f"{settings.dedup_tag_prefix}{p.hash}" for p in paras_all}
+        required_filtered = {
+            f"{settings.dedup_tag_prefix}{h}"
+            for p in paras_filtered
+            for h in (p.dedup_hashes or [p.hash])
+        }
+        required_all = {
+            f"{settings.dedup_tag_prefix}{h}"
+            for p in paras_all
+            for h in (p.dedup_hashes or [p.hash])
+        }
 
         try:
             anns = list(zotero.iter_annotations(parent_key=pdf_key, limit_per_page=100))
