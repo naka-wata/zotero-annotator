@@ -11,6 +11,7 @@ from zotero_annotator.clients.zotero import ZoteroClient
 from zotero_annotator.config import CoreSettings
 from zotero_annotator.services.annotation_position import build_note_position
 from zotero_annotator.services.paragraphs import Paragraph, extract_paragraphs
+from zotero_annotator.services.pdf_pages import get_pdf_page_sizes
 from zotero_annotator.services.translators.base import TranslationError, Translator
 
 
@@ -199,6 +200,8 @@ def process_item_no_translation(
             skipped_reason=f"pdf_download_failed: {exc}",
         )
 
+    page_sizes = get_pdf_page_sizes(pdf_bytes)
+
     try:
         tei_xml = grobid.process_fulltext(pdf_bytes, tei_coordinates="p")
     except httpx.HTTPError as exc:
@@ -275,6 +278,7 @@ def process_item_no_translation(
                     pdf_key,
                     paragraphs=paragraphs,
                     dedup_prefix=settings.dedup_tag_prefix,
+                    page_sizes=page_sizes,
                 )
                 if repaired:
                     warnings.append(f"repaired_broken_annotations={repaired}")
@@ -351,6 +355,7 @@ def process_item_no_translation(
                 pdf_key=pdf_key,
                 dedup_tags=dedup_tags,
                 annotation_mode=annotation_mode,
+                page_sizes=page_sizes,
             )
         )
         planned_dedup_tags.update(dedup_tags)
@@ -474,6 +479,7 @@ def repair_broken_annotations_for_pdf(
     *,
     paragraphs: List[Paragraph],
     dedup_prefix: str,
+    page_sizes: Dict[int, tuple[float, float]] | None = None,
 ) -> tuple[int, List[str]]:
     """
     Repair broken annotations that have a para:<hash> tag matching current paragraphs.
@@ -484,7 +490,7 @@ def repair_broken_annotations_for_pdf(
 
     pos_by_tag: Dict[str, Dict[str, str]] = {}
     for p in paragraphs:
-        note_pos = build_note_position(p)
+        note_pos = build_note_position(p, page_sizes=page_sizes)
         patch = {
             "annotationPosition": json.dumps(note_pos.annotation_position),
             "annotationPageLabel": str(note_pos.page_index + 1),
@@ -649,10 +655,11 @@ def build_annotation_payload(
     pdf_key: str,
     dedup_tags: List[str],
     annotation_mode: AnnotationMode,
+    page_sizes: Dict[int, tuple[float, float]] | None = None,
 ) -> Dict[str, Any]:
     # Build Zotero annotation payload (Zotero注釈ペイロード生成)
     if annotation_mode == "note":
-        note_pos = build_note_position(paragraph)
+        note_pos = build_note_position(paragraph, page_sizes=page_sizes)
         return {
             "itemType": "annotation",
             "parentItem": pdf_key,
@@ -665,7 +672,7 @@ def build_annotation_payload(
         }
 
     # highlight: small fixed rectangle, but still requires pageLabel/sortIndex in Zotero 7.
-    note_pos = build_note_position(paragraph)
+    note_pos = build_note_position(paragraph, page_sizes=page_sizes)
     annotation_position = dict(note_pos.annotation_position)
 
     return {

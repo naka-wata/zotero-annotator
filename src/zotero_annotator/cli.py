@@ -16,6 +16,7 @@ from zotero_annotator.config import get_core_settings, get_translation_settings
 from zotero_annotator.pipeline import build_annotation_payload, run_no_translation
 from zotero_annotator.services.annotation_position import build_note_position
 from zotero_annotator.services.paragraphs import estimate_coord_h_threshold, extract_paragraphs
+from zotero_annotator.services.pdf_pages import get_pdf_page_sizes
 from zotero_annotator.services.translators.factory import build_translator
 from zotero_annotator.services.translators.base import TranslationError
 
@@ -249,6 +250,8 @@ def dev_annotate(
         except httpx.HTTPError as exc:
             fail("Zotero connection failed", f"pdf download failed pdf_key={pdf_key} detail={exc}")
 
+        page_sizes = get_pdf_page_sizes(pdf_bytes)
+
         try:
             tei_xml = grobid.process_fulltext(pdf_bytes, tei_coordinates="p")
         except httpx.HTTPError as exc:
@@ -337,6 +340,7 @@ def dev_annotate(
             pdf_key=pdf_key,
             dedup_tags=dedup_tags,
             annotation_mode=mode,  # type: ignore[arg-type]
+            page_sizes=page_sizes,
         )
 
         # Read-only prints payload; write creates one annotation (read-onlyは表示のみ、writeは1件作成)
@@ -436,6 +440,8 @@ def dev_translate(
             pdf_bytes = zotero.download_attachment(zotero.build_file_url(pdf_key))
         except httpx.HTTPError as exc:
             fail("Zotero connection failed", f"pdf download failed pdf_key={pdf_key} detail={exc}")
+
+        page_sizes = get_pdf_page_sizes(pdf_bytes)
 
         try:
             tei_xml = grobid.process_fulltext(pdf_bytes, tei_coordinates="p")
@@ -772,7 +778,7 @@ def dev_repair_annotations(
         # Map para:<hash> -> computed position fields
         pos_by_tag = {}
         for p in paragraphs:
-            note_pos = build_note_position(p)
+            note_pos = build_note_position(p, page_sizes=page_sizes)
             patch = {
                 "annotationPosition": json.dumps(note_pos.annotation_position),
                 "annotationPageLabel": str(note_pos.page_index + 1),
