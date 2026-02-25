@@ -381,7 +381,9 @@ def process_item_no_translation(
             )
 
     # Auto finalize tags only when all paragraphs are complete (全段落が完了した時だけタグを更新)
-    if not dry_run:
+    # If translation is disabled, do not change item tags at all.
+    # (翻訳なしモードではアイテムタグを変更しない)
+    if not dry_run and translator is not None:
         # If we intentionally limited processing, do not finalize (一部だけ処理するモードでは完了扱いにしない)
         if max_paragraphs >= len(paragraphs):
             required = {f"{settings.dedup_tag_prefix}{h}" for p in paragraphs for h in (p.dedup_hashes or [p.hash])}
