@@ -37,7 +37,7 @@ def build_note_position(
     fallback_page_h: float = 842.0,
 ) -> NotePosition:
     # Use paragraph coords on its first page; otherwise fall back to a fixed point.
-    # Convert Y from top-origin (GROBID) to bottom-origin (PDF/Zotero).
+    # Convert Y from top-origin extraction coords to bottom-origin (PDF/Zotero).
     page_index = max((paragraph.page or 1) - 1, 0)
     page_w = fallback_page_w
     page_h = fallback_page_h

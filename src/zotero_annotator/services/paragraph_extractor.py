@@ -3,11 +3,10 @@ from __future__ import annotations
 import re
 from hashlib import sha1
 from statistics import median
-from typing import List, Literal, Optional
+from typing import List
 
 from zotero_annotator.config import CoreSettings
 from zotero_annotator.services.paragraphs import Paragraph, ParagraphCoord
-from zotero_annotator.services.paragraphs import extract_paragraphs as extract_paragraphs_grobid
 from zotero_annotator.services.pymupdf_paragraphs import ExtractionConfig, extract_paragraphs_pymupdf_bytes
 
 
@@ -301,62 +300,14 @@ def extract_paragraphs_from_pdf_bytes(
     pdf_bytes: bytes,
     *,
     settings: CoreSettings,
-    extractor: Optional[Literal["grobid", "pymupdf"]] = None,
-    grobid_client: object | None = None,
 ) -> List[Paragraph]:
     """
-    Unified paragraph extraction entrypoint.
-
-    - grobid: uses GROBID client + TEI pipeline (existing behavior)
-    - pymupdf: uses local PyMuPDF extraction, then adapts to Paragraph objects
+    Paragraph extraction entrypoint (PyMuPDF-only backend).
 
     Returns Paragraph objects compatible with the rest of the pipeline.
     """
-    backend = (extractor or settings.para_extractor or "grobid").strip().lower()
-    if backend not in ("grobid", "pymupdf"):
-        raise ValueError(f"unknown extractor: {backend}")
-
-    if backend == "grobid":
-        if grobid_client is None:
-            raise ValueError("grobid_client is required when extractor='grobid'")
-        # We only need .process_fulltext(pdf_bytes, tei_coordinates="p")
-        tei_xml = grobid_client.process_fulltext(pdf_bytes, tei_coordinates="p")
-        paras = extract_paragraphs_grobid(
-            tei_xml,
-            min_chars=settings.para_min_chars,
-            max_chars=settings.para_max_chars,
-            merge_splits=settings.para_merge_splits,
-            formula_placeholder=settings.para_formula_placeholder,
-            min_median_coord_h=settings.para_min_median_coord_h,
-            min_median_coord_h_auto_ratio=settings.para_min_median_coord_h_auto_ratio,
-            connector_max_chars=settings.para_connector_max_chars,
-            math_newlines=settings.para_math_newlines,
-            skip_algorithms=settings.para_skip_algorithms,
-            strip_plot_axis_prefix=settings.para_strip_plot_axis_prefix,
-            skip_captions=settings.para_skip_captions,
-        )
-        out: List[Paragraph] = []
-        in_refs = False
-        for p in paras:
-            t = (p.text or "").strip()
-            if not t:
-                continue
-            if settings.para_skip_references and _REFERENCES_HEADING_RE.match(t):
-                in_refs = True
-                continue
-            if settings.para_skip_references and (in_refs or _BIB_ENTRY_RE.match(t)):
-                continue
-            if _is_section_heading(t):
-                continue
-            if settings.para_skip_table_like and (not _is_caption_start(t)):
-                toks = _normalize_text(t).split()
-                if len(toks) >= 14 and _table_like_score(t) >= 0.35:
-                    continue
-            out.append(p)
-        return out
-
-    # PyMuPDF backend
-    # Note: PyMuPDF extraction returns JSON-like dicts: {text, pages, bboxes, is_caption, _median_font_size}.
+    # Note: PyMuPDF extraction returns JSON-like dicts:
+    # {text, pages, bboxes, is_caption, _median_font_size}.
     cfg = ExtractionConfig(drop_algorithms=bool(settings.para_skip_algorithms))
     raw = extract_paragraphs_pymupdf_bytes(pdf_bytes, config=cfg)
 

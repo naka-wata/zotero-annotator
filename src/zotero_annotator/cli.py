@@ -12,12 +12,10 @@ import typer
 from pydantic import ValidationError
 from rich.console import Console
 
-from zotero_annotator.clients.grobid import GrobidClient
 from zotero_annotator.clients.zotero import ZoteroClient
 from zotero_annotator.config import get_core_settings, get_translation_settings
 from zotero_annotator.pipeline import build_annotation_payload, run_no_translation
 from zotero_annotator.services.annotation_position import build_note_position
-from zotero_annotator.services.paragraphs import estimate_coord_h_threshold, extract_paragraphs
 from zotero_annotator.services.paragraph_extractor import extract_paragraphs_from_pdf_bytes
 from zotero_annotator.services.pdf_pages import get_pdf_page_sizes
 from zotero_annotator.services.pymupdf_paragraphs import ExtractionConfig as PyMuPDFExtractionConfig
@@ -107,7 +105,7 @@ def run(
     ),
     max_items: int = typer.Option(10, "--max-items", help="Max papers per run / 1回の最大論文数"),
     read_only: bool = typer.Option(
-        True, "--read-only/--write", help="Do not write to Zotero / Zoteroに書き込まない"
+        False, "--read-only/--write", help="Do not write to Zotero / Zoteroに書き込まない"
     ),
     translate: bool = typer.Option(
         True,
@@ -194,7 +192,7 @@ def dev_annotate(
     item_key: str = typer.Option(..., "--item-key", help="Target item key / 対象アイテムキー"),
     paragraph_index: int = typer.Option(0, "--paragraph-index", help="0-based paragraph index / 0始まり段落インデックス"),
     read_only: bool = typer.Option(
-        True, "--read-only/--write", help="Do not write to Zotero / Zoteroに書き込まない"
+        False, "--read-only/--write", help="Do not write to Zotero / Zoteroに書き込まない"
     ),
     translate: bool = typer.Option(
         False,
@@ -226,10 +224,6 @@ def dev_annotate(
         scope=settings.z_scope,
         library_id=settings.z_id,
     )
-    grobid = GrobidClient(
-        base_url=settings.grobid_url,
-        timeout_seconds=settings.grobid_timeout_seconds,
-    )
     try:
         # Check target item existence early (対象アイテムの存在を先に確認)
         try:
@@ -253,7 +247,7 @@ def dev_annotate(
             fail("PDF attachment missing", f"item_key={item_key}")
         pdf_key = pdf.get("key") or ""
 
-        # Download PDF and extract paragraphs via GROBID (PDF取得→GROBIDで段落抽出)
+        # Download PDF and extract paragraphs via PyMuPDF (PDF取得→PyMuPDFで段落抽出)
         try:
             pdf_bytes = zotero.download_attachment(zotero.build_file_url(pdf_key))
         except httpx.HTTPError as exc:
@@ -262,29 +256,9 @@ def dev_annotate(
         page_sizes = get_pdf_page_sizes(pdf_bytes)
 
         try:
-            tei_xml = grobid.process_fulltext(pdf_bytes, tei_coordinates="p")
-        except httpx.HTTPError as exc:
-            fail("GROBID failed", f"pdf_key={pdf_key} detail={exc}")
-
-        try:
-            paragraphs = extract_paragraphs(
-                tei_xml,
-                # Repair should be as inclusive as possible to match legacy tags.
-                # (修復は取りこぼしを減らすため最小文字数を0にする)
-                min_chars=0,
-                max_chars=max(settings.para_max_chars, 20000),
-                merge_splits=settings.para_merge_splits,
-                formula_placeholder=settings.para_formula_placeholder,
-                min_median_coord_h=settings.para_min_median_coord_h,
-                min_median_coord_h_auto_ratio=settings.para_min_median_coord_h_auto_ratio,
-                connector_max_chars=settings.para_connector_max_chars,
-                math_newlines=settings.para_math_newlines,
-                skip_algorithms=settings.para_skip_algorithms,
-                strip_plot_axis_prefix=settings.para_strip_plot_axis_prefix,
-                skip_captions=settings.para_skip_captions,
-            )
-        except ValueError as exc:
-            fail("TEI parse failed", str(exc))
+            paragraphs = extract_paragraphs_from_pdf_bytes(pdf_bytes, settings=settings)
+        except (ValueError, RuntimeError, httpx.HTTPError) as exc:
+            fail("Paragraph extraction failed", str(exc))
 
         if not paragraphs:
             fail("No paragraphs extracted", f"item_key={item_key} pdf_key={pdf_key} paragraphs=0")
@@ -384,7 +358,6 @@ def dev_annotate(
         )
     finally:
         # Ensure clients are closed (クライアントを確実にクローズ)
-        grobid.close()
         zotero.close()
 
 
@@ -417,10 +390,6 @@ def dev_translate(
         scope=settings.z_scope,
         library_id=settings.z_id,
     )
-    grobid = GrobidClient(
-        base_url=settings.grobid_url,
-        timeout_seconds=settings.grobid_timeout_seconds,
-    )
     try:
         # Check target item existence early (対象アイテムの存在を先に確認)
         try:
@@ -444,36 +413,16 @@ def dev_translate(
             fail("PDF attachment missing", f"item_key={item_key}")
         pdf_key = pdf.get("key") or ""
 
-        # Download PDF and extract paragraphs via GROBID (PDF取得→GROBIDで段落抽出)
+        # Download PDF and extract paragraphs via PyMuPDF (PDF取得→PyMuPDFで段落抽出)
         try:
             pdf_bytes = zotero.download_attachment(zotero.build_file_url(pdf_key))
         except httpx.HTTPError as exc:
             fail("Zotero connection failed", f"pdf download failed pdf_key={pdf_key} detail={exc}")
 
-        page_sizes = get_pdf_page_sizes(pdf_bytes)
-
         try:
-            tei_xml = grobid.process_fulltext(pdf_bytes, tei_coordinates="p")
-        except httpx.HTTPError as exc:
-            fail("GROBID failed", f"pdf_key={pdf_key} detail={exc}")
-
-        try:
-            paragraphs = extract_paragraphs(
-                tei_xml,
-                min_chars=settings.para_min_chars,
-                max_chars=settings.para_max_chars,
-                merge_splits=settings.para_merge_splits,
-                formula_placeholder=settings.para_formula_placeholder,
-                min_median_coord_h=settings.para_min_median_coord_h,
-                min_median_coord_h_auto_ratio=settings.para_min_median_coord_h_auto_ratio,
-                connector_max_chars=settings.para_connector_max_chars,
-                math_newlines=settings.para_math_newlines,
-                skip_algorithms=settings.para_skip_algorithms,
-                strip_plot_axis_prefix=settings.para_strip_plot_axis_prefix,
-                skip_captions=settings.para_skip_captions,
-            )
-        except ValueError as exc:
-            fail("TEI parse failed", str(exc))
+            paragraphs = extract_paragraphs_from_pdf_bytes(pdf_bytes, settings=settings)
+        except (ValueError, RuntimeError, httpx.HTTPError) as exc:
+            fail("Paragraph extraction failed", str(exc))
         if not paragraphs:
             fail("No paragraphs extracted", f"item_key={item_key} pdf_key={pdf_key} paragraphs=0")
         if paragraph_index >= len(paragraphs):
@@ -505,72 +454,12 @@ def dev_translate(
         console.print(result.text)
     finally:
         # Ensure clients are closed (クライアントを確実にクローズ)
-        grobid.close()
-        zotero.close()
-
-# Dev command to fetch TEI via GROBID (GROBIDでTEIを取得する開発用コマンド)
-@dev_app.command("grobid")
-def dev_grobid(
-    item_key: str = typer.Option(..., "--item-key", help="Target item key / 対象アイテムキー"),
-    out: Optional[Path] = typer.Option(None, "--out", help="Output TEI path / TEI出力先"),
-) -> None:
-    def fail(stage: str, detail: str) -> None:
-        console.print(f"[red]ERROR[/red] {stage}: {detail}")
-        raise typer.Exit(code=1)
-
-    # Load settings and create clients (設定読み込みとクライアント作成)
-    settings = get_core_settings()
-    zotero = ZoteroClient(
-        base_url=settings.zotero_base_url,
-        api_key=settings.z_api_key,
-        scope=settings.z_scope,
-        library_id=settings.z_id,
-    )
-    grobid = GrobidClient(
-        base_url=settings.grobid_url,
-        timeout_seconds=settings.grobid_timeout_seconds,
-    )
-    try:
-        # Resolve PDF attachment from target item (対象アイテムのPDF添付を解決)
-        try:
-            children = zotero.list_children(item_key)
-        except httpx.HTTPError as exc:
-            fail("Zotero connection failed", f"children fetch failed item_key={item_key} detail={exc}")
-        pdf = zotero.pick_pdf_attachment(children)
-        if not pdf:
-            raise typer.BadParameter("No PDF attachment found for --item-key")
-
-        # Download PDF and request TEI from GROBID (PDFをダウンロードしてGROBIDでTEI化)
-        pdf_key = pdf.get("key") or ""
-        try:
-            pdf_bytes = zotero.download_attachment(zotero.build_file_url(pdf_key))
-        except httpx.HTTPError as exc:
-            fail("Zotero connection failed", f"pdf download failed pdf_key={pdf_key} detail={exc}")
-
-        try:
-            tei_xml = grobid.process_fulltext(pdf_bytes, tei_coordinates="p")
-        except httpx.HTTPError as exc:
-            fail("GROBID failed", f"pdf_key={pdf_key} detail={exc}")
-
-        # Output TEI to file or console preview (TEIをファイル出力またはプレビュー表示)
-        if out:
-            out.write_text(tei_xml, encoding="utf-8")
-            console.print(f"[green]Wrote[/green] {out}")
-        else:
-            preview = tei_xml[:1200]
-            console.print(preview)
-            if len(tei_xml) > len(preview):
-                console.print("[cyan]...(truncated)[/cyan]")
-    finally:
-        # Ensure clients are closed (クライアントを確実にクローズ)
-        grobid.close()
         zotero.close()
 
 
 @dev_app.command("dump-xml")
 def dev_dump_xml(
     item_key: str = typer.Option(..., "--item-key", help="Target item key / 対象アイテムキー"),
-    out_grobid: Path = typer.Option(Path("grobid.tei.xml"), "--out-grobid", help="Output GROBID TEI path / GROBID TEI出力先"),
     out_pymupdf: Path = typer.Option(
         Path("pymupdf.paragraphs.xml"),
         "--out-pymupdf",
@@ -581,9 +470,7 @@ def dev_dump_xml(
     ),
 ) -> None:
     """
-    Dump two XML files from the same PDF attachment:
-    - GROBID TEI (true TEI XML)
-    - PyMuPDF extracted paragraphs (tool-internal XML; not TEI)
+    Dump PyMuPDF extracted paragraphs XML from the same PDF attachment.
     """
 
     def fail(stage: str, detail: str) -> None:
@@ -596,10 +483,6 @@ def dev_dump_xml(
         api_key=settings.z_api_key,
         scope=settings.z_scope,
         library_id=settings.z_id,
-    )
-    grobid = GrobidClient(
-        base_url=settings.grobid_url,
-        timeout_seconds=settings.grobid_timeout_seconds,
     )
     try:
         try:
@@ -624,14 +507,7 @@ def dev_dump_xml(
         except httpx.HTTPError as exc:
             fail("Zotero connection failed", f"pdf download failed pdf_key={pdf_key} detail={exc}")
 
-        # 1) GROBID TEI XML
-        try:
-            tei_xml = grobid.process_fulltext(pdf_bytes, tei_coordinates="p")
-        except httpx.HTTPError as exc:
-            fail("GROBID failed", f"pdf_key={pdf_key} detail={exc}")
-        out_grobid.write_text(tei_xml, encoding="utf-8")
-
-        # 2) PyMuPDF paragraphs XML (not TEI)
+        # PyMuPDF paragraphs XML (tool-internal XML; not TEI)
         # NOTE: PyMuPDF backend now marks captions as `is_caption` instead of dropping at extraction time.
         cfg = PyMuPDFExtractionConfig()
         paras = extract_paragraphs_pymupdf_bytes(pdf_bytes, config=cfg)
@@ -640,12 +516,11 @@ def dev_dump_xml(
         out_pymupdf.write_text(paragraphs_to_xml(paras), encoding="utf-8")
 
         console.print(
-            f"[green]Wrote[/green] grobid={out_grobid} pymupdf={out_pymupdf} "
+            f"[green]Wrote[/green] pymupdf={out_pymupdf} "
             f"item_key={item_key} pdf_key={pdf_key} title={item_title}",
             highlight=False,
         )
     finally:
-        grobid.close()
         zotero.close()
 
 
@@ -897,7 +772,7 @@ def dev_reconstruct_from_pymupdf_dict(
     """
     Reconstruct paragraphs from a dumped `page.get_text('dict')` JSON.
 
-    This is offline and does not require Zotero/GROBID access.
+    This is offline and does not require Zotero/API access.
     """
     payload = json.loads(in_path.read_text(encoding="utf-8"))
     paras = extract_paragraphs_from_pymupdf_dict(payload, config=PyMuPDFExtractionConfig())
@@ -914,119 +789,46 @@ def dev_reconstruct_from_pymupdf_dict(
 # Dev command to inspect extracted paragraphs (段落抽出結果を確認する開発用コマンド)
 @dev_app.command("paragraphs")
 def dev_paragraphs(
-    item_key: Optional[str] = typer.Option(None, "--item-key", help="Target item key / 対象アイテムキー"),
-    tei: Optional[Path] = typer.Option(None, "--tei", help="Input TEI file path / TEI入力ファイル"),
+    item_key: str = typer.Option(..., "--item-key", help="Target item key / 対象アイテムキー"),
     out: Optional[Path] = typer.Option(None, "--out", help="Output JSON path / JSON出力先"),
     max_rows: int = typer.Option(20, "--max-rows", help="Max rows to print / 表示する最大件数"),
-    debug_coord_h: bool = typer.Option(
-        False, "--debug-coord-h", help="Show coord-h threshold and per-paragraph median(h)"
-    ),
 ) -> None:
-    # Validate inputs (入力オプションのバリデーション)
+    """Inspect extracted paragraphs from item PDF (PyMuPDF backend)."""
     if max_rows < 1:
         raise typer.BadParameter("--max-rows must be >= 1")
-    if bool(item_key) == bool(tei):
-        raise typer.BadParameter("Specify exactly one of --item-key or --tei")
 
     def fail(stage: str, detail: str) -> None:
         console.print(f"[red]ERROR[/red] {stage}: {detail}")
         raise typer.Exit(code=1)
 
-    # Load settings (設定を読み込む)
     settings = get_core_settings()
-    tei_xml: str
-
-    # Load TEI from file or fetch from Zotero+GROBID (TEIをファイル入力またはZotero+GROBIDから取得)
-    if tei:
-        tei_xml = tei.read_text(encoding="utf-8")
-    else:
-        zotero = ZoteroClient(
-            base_url=settings.zotero_base_url,
-            api_key=settings.z_api_key,
-            scope=settings.z_scope,
-            library_id=settings.z_id,
-        )
-        grobid = GrobidClient(
-            base_url=settings.grobid_url,
-            timeout_seconds=settings.grobid_timeout_seconds,
-        )
-        try:
-            try:
-                children = zotero.list_children(item_key or "")
-            except httpx.HTTPError as exc:
-                fail("Zotero connection failed", f"children fetch failed item_key={item_key} detail={exc}")
-            pdf = zotero.pick_pdf_attachment(children)
-            if not pdf:
-                raise typer.BadParameter("No PDF attachment found for --item-key")
-            pdf_key = pdf.get("key") or ""
-            try:
-                pdf_bytes = zotero.download_attachment(zotero.build_file_url(pdf_key))
-            except httpx.HTTPError as exc:
-                fail("Zotero connection failed", f"pdf download failed pdf_key={pdf_key} detail={exc}")
-            try:
-                tei_xml = grobid.process_fulltext(pdf_bytes, tei_coordinates="p")
-            except httpx.HTTPError as exc:
-                fail("GROBID failed", f"pdf_key={pdf_key} detail={exc}")
-        finally:
-            grobid.close()
-            zotero.close()
-
-    # Extract and summarize paragraphs (段落抽出とサマリ表示)
+    zotero = ZoteroClient(
+        base_url=settings.zotero_base_url,
+        api_key=settings.z_api_key,
+        scope=settings.z_scope,
+        library_id=settings.z_id,
+    )
     try:
-        if debug_coord_h:
-            coord_h = estimate_coord_h_threshold(
-                tei_xml,
-                min_chars=settings.para_min_chars,
-                formula_placeholder=settings.para_formula_placeholder,
-                min_median_coord_h=settings.para_min_median_coord_h,
-                min_median_coord_h_auto_ratio=settings.para_min_median_coord_h_auto_ratio,
-            )
-            console.print(
-                f"[cyan]coord_h_threshold={coord_h.threshold:.3f}[/cyan] method={coord_h.method} samples={coord_h.samples} q75={coord_h.q75} ratio={coord_h.ratio}",
-                highlight=False,
-            )
+        try:
+            children = zotero.list_children(item_key)
+        except httpx.HTTPError as exc:
+            fail("Zotero connection failed", f"children fetch failed item_key={item_key} detail={exc}")
+        pdf = zotero.pick_pdf_attachment(children)
+        if not pdf:
+            raise typer.BadParameter("No PDF attachment found for --item-key")
+        pdf_key = pdf.get("key") or ""
+        try:
+            pdf_bytes = zotero.download_attachment(zotero.build_file_url(pdf_key))
+        except httpx.HTTPError as exc:
+            fail("Zotero connection failed", f"pdf download failed pdf_key={pdf_key} detail={exc}")
+        try:
+            rows = extract_paragraphs_from_pdf_bytes(pdf_bytes, settings=settings)
+        except (ValueError, RuntimeError, httpx.HTTPError) as exc:
+            fail("Paragraph extraction failed", str(exc))
+    finally:
+        zotero.close()
 
-            rows_all = extract_paragraphs(
-                tei_xml,
-                min_chars=settings.para_min_chars,
-                max_chars=settings.para_max_chars,
-                merge_splits=settings.para_merge_splits,
-                formula_placeholder=settings.para_formula_placeholder,
-                min_median_coord_h=0.0,
-                min_median_coord_h_auto_ratio=settings.para_min_median_coord_h_auto_ratio,
-                connector_max_chars=settings.para_connector_max_chars,
-                math_newlines=settings.para_math_newlines,
-                skip_algorithms=settings.para_skip_algorithms,
-                strip_plot_axis_prefix=settings.para_strip_plot_axis_prefix,
-                skip_captions=settings.para_skip_captions,
-            )
-        else:
-            rows_all = []
-
-        rows = extract_paragraphs(
-            tei_xml,
-            min_chars=settings.para_min_chars,
-            max_chars=settings.para_max_chars,
-            merge_splits=settings.para_merge_splits,
-            formula_placeholder=settings.para_formula_placeholder,
-            min_median_coord_h=settings.para_min_median_coord_h,
-            min_median_coord_h_auto_ratio=settings.para_min_median_coord_h_auto_ratio,
-            connector_max_chars=settings.para_connector_max_chars,
-            math_newlines=settings.para_math_newlines,
-            skip_algorithms=settings.para_skip_algorithms,
-            strip_plot_axis_prefix=settings.para_strip_plot_axis_prefix,
-            skip_captions=settings.para_skip_captions,
-        )
-    except ValueError as exc:
-        fail("TEI parse failed", str(exc))
-
-    if debug_coord_h:
-        console.print(
-            f"[cyan]paragraphs={len(rows)}[/cyan] (unfiltered={len(rows_all)} removed_by_coord_h={max(0, len(rows_all)-len(rows))})",
-            highlight=False,
-        )
-    else:
-        console.print(f"[cyan]paragraphs={len(rows)}[/cyan]")
+    console.print(f"[cyan]paragraphs={len(rows)}[/cyan]")
 
     # Build preview payload (プレビュー用ペイロードを生成)
     preview = rows[:max_rows]
@@ -1040,9 +842,6 @@ def dev_paragraphs(
             "text": p.text,
             "coords": [c.__dict__ for c in p.coords],
         }
-        if debug_coord_h and p.coords:
-            hs = [c.h for c in p.coords]
-            row["median_coord_h"] = float(statistics.median(hs)) if hs else None
         payload.append(row)
 
     # Output JSON to file or console (JSONをファイル出力またはコンソール表示)
@@ -1057,7 +856,7 @@ def dev_paragraphs(
 def dev_repair_annotations(
     item_key: str = typer.Option(..., "--item-key", help="Target item key / 対象アイテムキー"),
     read_only: bool = typer.Option(
-        True, "--read-only/--write", help="Do not write to Zotero / Zoteroに書き込まない"
+        False, "--read-only/--write", help="Do not write to Zotero / Zoteroに書き込まない"
     ),
 ) -> None:
     """
@@ -1077,10 +876,6 @@ def dev_repair_annotations(
         api_key=settings.z_api_key,
         scope=settings.z_scope,
         library_id=settings.z_id,
-    )
-    grobid = GrobidClient(
-        base_url=settings.grobid_url,
-        timeout_seconds=settings.grobid_timeout_seconds,
     )
     try:
         try:
@@ -1104,29 +899,12 @@ def dev_repair_annotations(
             pdf_bytes = zotero.download_attachment(zotero.build_file_url(pdf_key))
         except httpx.HTTPError as exc:
             fail("Zotero connection failed", f"pdf download failed pdf_key={pdf_key} detail={exc}")
+        page_sizes = get_pdf_page_sizes(pdf_bytes)
 
         try:
-            tei_xml = grobid.process_fulltext(pdf_bytes, tei_coordinates="p")
-        except httpx.HTTPError as exc:
-            fail("GROBID failed", f"pdf_key={pdf_key} detail={exc}")
-
-        try:
-            paragraphs = extract_paragraphs(
-                tei_xml,
-                min_chars=settings.para_min_chars,
-                max_chars=settings.para_max_chars,
-                merge_splits=settings.para_merge_splits,
-                formula_placeholder=settings.para_formula_placeholder,
-                min_median_coord_h=settings.para_min_median_coord_h,
-                min_median_coord_h_auto_ratio=settings.para_min_median_coord_h_auto_ratio,
-                connector_max_chars=settings.para_connector_max_chars,
-                math_newlines=settings.para_math_newlines,
-                skip_algorithms=settings.para_skip_algorithms,
-                strip_plot_axis_prefix=settings.para_strip_plot_axis_prefix,
-                skip_captions=settings.para_skip_captions,
-            )
-        except ValueError as exc:
-            fail("TEI parse failed", str(exc))
+            paragraphs = extract_paragraphs_from_pdf_bytes(pdf_bytes, settings=settings)
+        except (ValueError, RuntimeError, httpx.HTTPError) as exc:
+            fail("Paragraph extraction failed", str(exc))
 
         # Map para:<hash> -> computed position fields
         pos_by_tag = {}
@@ -1203,7 +981,6 @@ def dev_repair_annotations(
             highlight=False,
         )
     finally:
-        grobid.close()
         zotero.close()
 
 
@@ -1211,7 +988,7 @@ def dev_repair_annotations(
 def dev_delete_broken_annotations(
     item_key: str = typer.Option(..., "--item-key", help="Target item key / 対象アイテムキー"),
     read_only: bool = typer.Option(
-        True, "--read-only/--write", help="Do not write to Zotero / Zoteroに書き込まない"
+        False, "--read-only/--write", help="Do not write to Zotero / Zoteroに書き込まない"
     ),
 ) -> None:
     """Delete broken annotations missing required fields (壊れた注釈を削除する)."""
@@ -1284,7 +1061,7 @@ def dev_delete_broken_annotations(
 def dev_delete_all_annotations(
     item_key: str = typer.Option(..., "--item-key", help="Target item key / 対象アイテムキー"),
     read_only: bool = typer.Option(
-        True, "--read-only/--write", help="Do not write to Zotero / Zoteroに書き込まない"
+        False, "--read-only/--write", help="Do not write to Zotero / Zoteroに書き込まない"
     ),
 ) -> None:
     """Delete all annotations for the PDF attachment (PDF添付の全注釈を削除する)."""
@@ -1361,10 +1138,6 @@ def dev_audit_annotations(
         scope=settings.z_scope,
         library_id=settings.z_id,
     )
-    grobid = GrobidClient(
-        base_url=settings.grobid_url,
-        timeout_seconds=settings.grobid_timeout_seconds,
-    )
     try:
         try:
             item = zotero.get_item(item_key)
@@ -1388,41 +1161,15 @@ def dev_audit_annotations(
         except httpx.HTTPError as exc:
             fail("Zotero connection failed", f"pdf download failed pdf_key={pdf_key} detail={exc}")
 
-        try:
-            tei_xml = grobid.process_fulltext(pdf_bytes, tei_coordinates="p")
-        except httpx.HTTPError as exc:
-            fail("GROBID failed", f"pdf_key={pdf_key} detail={exc}")
+        paras_filtered = extract_paragraphs_from_pdf_bytes(pdf_bytes, settings=settings)
 
-        try:
-            paras_filtered = extract_paragraphs(
-                tei_xml,
-                min_chars=settings.para_min_chars,
-                max_chars=settings.para_max_chars,
-                merge_splits=settings.para_merge_splits,
-                formula_placeholder=settings.para_formula_placeholder,
-                min_median_coord_h=settings.para_min_median_coord_h,
-                min_median_coord_h_auto_ratio=settings.para_min_median_coord_h_auto_ratio,
-                connector_max_chars=settings.para_connector_max_chars,
-                math_newlines=settings.para_math_newlines,
-                skip_algorithms=settings.para_skip_algorithms,
-                strip_plot_axis_prefix=settings.para_strip_plot_axis_prefix,
-                skip_captions=settings.para_skip_captions,
-            )
-            paras_all = extract_paragraphs(
-                tei_xml,
-                min_chars=0,
-                max_chars=max(settings.para_max_chars, 20000),
-                merge_splits=settings.para_merge_splits,
-                formula_placeholder=settings.para_formula_placeholder,
-                min_median_coord_h=settings.para_min_median_coord_h,
-                min_median_coord_h_auto_ratio=settings.para_min_median_coord_h_auto_ratio,
-                connector_max_chars=settings.para_connector_max_chars,
-                math_newlines=settings.para_math_newlines,
-                skip_algorithms=settings.para_skip_algorithms,
-                strip_plot_axis_prefix=settings.para_strip_plot_axis_prefix,
-            )
-        except ValueError as exc:
-            fail("TEI parse failed", str(exc))
+        settings_all = settings.model_copy(
+            update={
+                "para_min_chars": 0,
+                "para_max_chars": max(settings.para_max_chars, 20000),
+            }
+        )
+        paras_all = extract_paragraphs_from_pdf_bytes(pdf_bytes, settings=settings_all)
 
         required_filtered = {
             f"{settings.dedup_tag_prefix}{h}"
@@ -1508,5 +1255,4 @@ def dev_audit_annotations(
             for k in invalid_pos[:max_problem_rows]:
                 console.print(f"- annotation_key={k}", highlight=False)
     finally:
-        grobid.close()
         zotero.close()

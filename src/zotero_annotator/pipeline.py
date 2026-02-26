@@ -6,7 +6,6 @@ from typing import Any, Dict, List, Literal, Optional, Sequence, Set
 
 import httpx
 
-from zotero_annotator.clients.grobid import GrobidClient
 from zotero_annotator.clients.zotero import ZoteroClient
 from zotero_annotator.config import CoreSettings
 from zotero_annotator.services.annotation_position import build_note_position
@@ -55,7 +54,7 @@ def run_no_translation(
 
     - Fetch items by tag from Zotero (タグ付きアイテム取得)
     - Download PDF attachment (PDF添付の取得)
-    - Parse paragraphs via GROBID TEI (GROBID TEIから段落抽出)
+    - Parse paragraphs via PyMuPDF (PyMuPDFで段落抽出)
     - Create note/highlight annotations with para:<hash> tag (注釈作成＋重複防止タグ)
     """
     zotero = ZoteroClient(
@@ -64,11 +63,6 @@ def run_no_translation(
         scope=settings.z_scope,
         library_id=settings.z_id,
     )
-    grobid = GrobidClient(
-        base_url=settings.grobid_url,
-        timeout_seconds=settings.grobid_timeout_seconds,
-    )
-
     results: List[ItemResult] = []
     try:
         if item_keys:
@@ -99,7 +93,6 @@ def run_no_translation(
                     process_item_no_translation(
                         settings,
                         zotero=zotero,
-                        grobid=grobid,
                         item=item,
                         dry_run=dry_run,
                         max_paragraphs=max_paragraphs_per_item,
@@ -119,7 +112,6 @@ def run_no_translation(
                     process_item_no_translation(
                         settings,
                         zotero=zotero,
-                        grobid=grobid,
                         item=item,
                         dry_run=dry_run,
                         max_paragraphs=max_paragraphs_per_item,
@@ -131,7 +123,6 @@ def run_no_translation(
                     )
                 )
     finally:
-        grobid.close()
         zotero.close()
 
     return results
@@ -141,7 +132,6 @@ def process_item_no_translation(
     settings: CoreSettings,
     *,
     zotero: ZoteroClient,
-    grobid: GrobidClient,
     item: Dict[str, Any],
     dry_run: bool,
     max_paragraphs: int,
@@ -207,7 +197,6 @@ def process_item_no_translation(
         paragraphs = extract_paragraphs_from_pdf_bytes(
             pdf_bytes,
             settings=settings,
-            grobid_client=grobid if settings.para_extractor == "grobid" else None,
         )
     except httpx.HTTPError as exc:
         return ItemResult(
@@ -659,7 +648,7 @@ def build_annotation_payload(
             "annotationPosition": json.dumps(note_pos.annotation_position),
             "annotationPageLabel": str(note_pos.page_index + 1),
             "annotationSortIndex": note_pos.annotation_sort_index,
-            "tags": [{"tag": t} for t in dedup_tags] + [{"tag": "grobid-auto"}],
+            "tags": [{"tag": t} for t in dedup_tags] + [{"tag": "pymupdf-auto"}],
         }
 
     # highlight: small fixed rectangle, but still requires pageLabel/sortIndex in Zotero 7.

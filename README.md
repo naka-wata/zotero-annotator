@@ -1,106 +1,84 @@
-# Zotero Annotator (DeepL/OpenAI + GROBID) ✨
+# Zotero Annotator (PyMuPDF Beta)
 
-Automatically analyzes academic PDFs in Zotero and adds translated paragraph annotations as note annotations.  
-Zotero内の学術PDFを自動解析し、段落翻訳を「注釈ノート」として追加します。
+Zotero の PDF から段落を抽出し、翻訳付きノート注釈を自動作成する CLI です。  
+この beta は **PyMuPDF 固定**で動作します（GROBID は使いません）。
 
-## Overview / 概要
+## What it does
 
-- Detect items tagged with `to-translate` in Zotero.  
-  Zotero内の `to-translate` タグ付き論文を検出します。
-- Extract paragraph text from PDFs using GROBID.  
-  GROBIDでPDFから段落テキストを抽出します。
-- Translate each paragraph with a translator provider (DeepL/OpenAI).  
-  翻訳プロバイダ（DeepL/OpenAI）で段落ごとに翻訳します。
-- Create note annotations with `para:<hash>` tags to prevent duplicates.  
-  重複防止のため `para:<hash>` タグ付き注釈ノートを作成します。
-- Remove the target tag once all paragraphs are processed.  
-  全段落の処理後、対象タグを削除します。
+- `to-translate` タグ付き論文（または `--item-key` 指定）を処理
+- PDF から段落を抽出（PyMuPDF）
+- 翻訳（`deepl` のみ実装済み）
+- Zotero 注釈ノートを作成し、`para:<hash>` タグで重複防止
+- 完了後に対象タグを除去（通常フロー）
 
-## Requirements / 必要環境
+## Requirements
 
-- Python 3.11+
-- Zotero API key
-- GROBID server (Docker recommended)
-- DeepL API key or OpenAI API key
-- Python 3.11+
-- Zotero APIキー
-- GROBIDサーバー（Docker推奨）
-- DeepL APIキー または OpenAI APIキー
+- Python `3.11+`
+- Zotero API: `Z_SCOPE`, `Z_ID`, `Z_API_KEY`
+- 翻訳利用時: DeepL API (`DEEPL_API_KEY`)
 
-## Setup / セットアップ
-
-1. Create and populate `.env` (see `.env.example`).  
-   `.env` を作成し、設定を記入します（`.env.example` を参照）。
-2. Install (uv):  
-   uvでインストールします。
+## Setup
 
 ```bash
-uv venv .venv
+uv venv
+UV_LINK_MODE=copy uv sync --no-editable
 source .venv/bin/activate
-uv pip install -e .
+cp .env.example .env
 ```
 
-3. Start GROBID (Docker):  
-   GROBIDを起動します（Docker）。
+`.env` ファイルを手動で作る場合は、プロジェクト直下に `.env` を作成して次を記入してください。
+
+```dotenv
+Z_SCOPE=user
+Z_ID=YOUR_ZOTERO_USER_OR_GROUP_ID
+Z_API_KEY=YOUR_ZOTERO_API_KEY
+TRANSLATOR_PROVIDER=deepl
+TARGET_LANG=JA
+DEEPL_API_KEY=YOUR_DEEPL_API_KEY
+```
+
+`.env` を編集して最低限以下を設定してください。
+
+- `Z_SCOPE`
+- `Z_ID`
+- `Z_API_KEY`
+- `TRANSLATOR_PROVIDER`（`deepl` 推奨）
+- `TARGET_LANG`
+- `DEEPL_API_KEY`（`--translate` を使う場合）
+
+## Quick start
 
 ```bash
-docker compose up -d grobid
+# 書き込みなし確認
+zotero-annotator run --read-only --max-items 1
+
+# 実書き込み（翻訳なし）
+zotero-annotator run --write --no-translate --max-items 1
+
+# 単一論文を実行
+zotero-annotator run --write --item-key ABCD1234 --no-translate
 ```
 
-## Environment Variables / 環境変数
+## Fixed beta behavior
 
-Key configuration lives in `.env`. The defaults in `.env.example` cover:  
-設定は `.env` にまとめます。`.env.example` のデフォルトは以下を含みます。
+beta の安定運用のため、以下はコード内固定値です（`.env` で変更不可）。
 
-- Zotero: `Z_SCOPE`, `Z_ID`, `Z_API_KEY`
-- Tags: `Z_TARGET_TAG`, `Z_DONE_TAG`, `Z_REMOVE_TAG`, `Z_IN_PROGRESS_TAG`
-- GROBID: `GROBID_URL`, `GROBID_TIMEOUT_SECONDS`
-- Translator: `TRANSLATOR_PROVIDER`, `TARGET_LANG`, `SOURCE_LANG`, `DEEPL_API_KEY`, `DEEPL_API_URL`
-- Pipeline: `DEDUP_TAG_PREFIX`, `PARA_MIN_CHARS`, `PARA_MAX_CHARS`, `TARGET_LANG`
-- Logging: `LOG_LEVEL`
+- `PARA_CONNECTOR_MAX_CHARS=20`
+- `PARA_MATH_NEWLINES=1`
+- `PARA_SKIP_ALGORITHMS=1`
+- `PARA_SKIP_CAPTIONS=1`
+- `PARA_STRIP_PLOT_AXIS_PREFIX=1`
+- `PARA_MIN_MEDIAN_COORD_H=auto`
+- `PARA_MIN_MEDIAN_COORD_H_AUTO_RATIO=0.8`
+- `PARA_MERGE_SPLITS=1`
+- `PARA_FORMULA_PLACEHOLDER=[MATH]`
+- `RUN_MAX_PARAGRAPHS_PER_ITEM=100`
+- `RUN_REPAIR_BROKEN_ANNOTATIONS=1`
+- `RUN_DELETE_BROKEN_ANNOTATIONS=1`
+- `ANNOTATION_MODE=note`
+- `LOG_LEVEL=INFO`
 
-## Usage / 使い方
+## Notes
 
-Preview without writing annotations:  
-注釈を作成せずに確認する場合:
-
-```bash
-zotero-annotator run --read-only
-```
-
-Process a small batch:  
-少数だけ実行する場合:
-
-```bash
-zotero-annotator run --max-items 5
-```
-
-## Output Behavior / 出力
-
-- Each paragraph becomes a note annotation on the PDF.  
-  各段落はPDF内の注釈ノートになります。
-- Each annotation is tagged with `para:<hash>` for deduplication.  
-  注釈には `para:<hash>` が付与され、重複を防ぎます。
-- When all paragraphs are finished, the target tag is removed.  
-  全段落完了後、対象タグを削除します。
-- The CLI prints `"{title} の翻訳完了"` per paper.  
-  各論文ごとに `"{title} の翻訳完了"` を表示します。
-
-## Project Structure / 構成
-
-```
-zotero-annotator/
-├── pyproject.toml
-├── src/
-│   └── zotero_annotator/
-├── docker-compose.yml
-├── .env.example
-└── README.md
-```
-
-## Security / セキュリティ
-
-- Do not commit `.env`.  
-  `.env` はコミットしないでください。
-- Revoke and regenerate API keys if exposed.  
-  APIキーが漏洩した場合は再発行してください。
+- `TRANSLATOR_PROVIDER=openai` は現時点で未実装です。
+- 詳細コマンドは `CLI.md` を参照してください。
