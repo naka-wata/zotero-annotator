@@ -11,6 +11,11 @@ try:  # Optional dependency (preferred).
 except Exception:  # pragma: no cover
     PdfReader = None  # type: ignore[assignment]
 
+try:  # Optional dependency (fallback; often present when using PyMuPDF backend).
+    import fitz  # type: ignore
+except Exception:  # pragma: no cover
+    fitz = None  # type: ignore[assignment]
+
 
 _BOX_RE = re.compile(
     r"/(?P<box>CropBox|MediaBox)\s*\[\s*(?P<x0>-?\d+(?:\.\d+)?)\s+(?P<y0>-?\d+(?:\.\d+)?)\s+(?P<x1>-?\d+(?:\.\d+)?)\s+(?P<y1>-?\d+(?:\.\d+)?)\s*\]"
@@ -54,6 +59,24 @@ def get_pdf_page_sizes(pdf_bytes: bytes) -> Dict[int, Tuple[float, float]]:
                 return out
         except Exception:
             # Fall back to heuristic below.
+            pass
+
+    # Fallback: derive page sizes via PyMuPDF if available.
+    # This is especially helpful when users install with `--no-deps` and pypdf is missing.
+    if fitz is not None:
+        try:
+            doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+            out: Dict[int, Tuple[float, float]] = {}
+            for i in range(doc.page_count):
+                page = doc.load_page(i)
+                w = float(page.rect.width)
+                h = float(page.rect.height)
+                if w > 0 and h > 0:
+                    out[i] = (w, h)
+            doc.close()
+            if out:
+                return out
+        except Exception:
             pass
 
     # Heuristic fallback: estimate a dominant size for the document, expose as page 0.

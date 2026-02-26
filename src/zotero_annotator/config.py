@@ -29,12 +29,16 @@ class CoreSettings(_BaseEnvSettings):
     z_remove_tag: str = Field("to-translate", min_length=1, alias="Z_REMOVE_TAG")
     z_in_progress_tag: str = Field("translating", min_length=1, alias="Z_IN_PROGRESS_TAG")
 
-    # GROBID
-    grobid_url: str = Field(..., min_length=1, alias="GROBID_URL")
+    # GROBID (used only when PARA_EXTRACTOR=grobid)
+    grobid_url: str = Field("http://localhost:8070", min_length=1, alias="GROBID_URL")
     grobid_timeout_seconds: int = Field(60, alias="GROBID_TIMEOUT_SECONDS")
 
     # Pipeline
     dedup_tag_prefix: str = "para:"
+    # Paragraph extraction backend:
+    # - grobid: use GROBID server + TEI coords
+    # - pymupdf: local extraction via PyMuPDF (no external server)
+    para_extractor: Literal["grobid", "pymupdf"] = Field("grobid", alias="PARA_EXTRACTOR")
     para_min_chars: int = Field(60, alias="PARA_MIN_CHARS")
     para_max_chars: int = Field(1500, alias="PARA_MAX_CHARS")
     # Filter out non-body text like plot axis labels by coordinate height (h).
@@ -55,6 +59,17 @@ class CoreSettings(_BaseEnvSettings):
     # Skip figure/table captions as standalone notes (e.g., "Figure 4: ...", "Table 1: ...").
     # If a caption is mixed with prose in the same paragraph, the caption prefix is removed and the prose is kept.
     para_skip_captions: bool = Field(False, alias="PARA_SKIP_CAPTIONS")
+    # Drop inline citation markers like "[23]" or "[3, 4]" from extracted text.
+    # Default: keep citations in body text.
+    para_drop_citations: bool = Field(False, alias="PARA_DROP_CITATIONS")
+    # Drop footnote markers like "layer1." -> "layer." (only when it looks like a footnote marker).
+    # Default: keep as-is (some papers use it as meaningful index).
+    para_drop_footnote_markers: bool = Field(False, alias="PARA_DROP_FOOTNOTE_MARKERS")
+    # Skip references/bibliography section paragraphs (and anything after a "References" heading).
+    para_skip_references: bool = Field(True, alias="PARA_SKIP_REFERENCES")
+    # Skip table-body-like paragraphs (dense numeric / short tokens), since tables are usually not
+    # helpful as note annotations. Captions are handled separately.
+    para_skip_table_like: bool = Field(True, alias="PARA_SKIP_TABLE_LIKE")
 
     # Annotation output mode (what to create in Zotero)
     # - note: create note annotations (default)

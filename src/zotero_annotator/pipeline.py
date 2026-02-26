@@ -10,7 +10,8 @@ from zotero_annotator.clients.grobid import GrobidClient
 from zotero_annotator.clients.zotero import ZoteroClient
 from zotero_annotator.config import CoreSettings
 from zotero_annotator.services.annotation_position import build_note_position
-from zotero_annotator.services.paragraphs import Paragraph, extract_paragraphs
+from zotero_annotator.services.paragraphs import Paragraph
+from zotero_annotator.services.paragraph_extractor import extract_paragraphs_from_pdf_bytes
 from zotero_annotator.services.pdf_pages import get_pdf_page_sizes
 from zotero_annotator.services.translators.base import TranslationError, Translator
 
@@ -203,7 +204,11 @@ def process_item_no_translation(
     page_sizes = get_pdf_page_sizes(pdf_bytes)
 
     try:
-        tei_xml = grobid.process_fulltext(pdf_bytes, tei_coordinates="p")
+        paragraphs = extract_paragraphs_from_pdf_bytes(
+            pdf_bytes,
+            settings=settings,
+            grobid_client=grobid if settings.para_extractor == "grobid" else None,
+        )
     except httpx.HTTPError as exc:
         return ItemResult(
             item_key=item_key,
@@ -214,25 +219,9 @@ def process_item_no_translation(
             paragraphs_processed=0,
             annotations_planned=0,
             annotations_created=0,
-            skipped_reason=f"grobid_failed: {exc}",
+            skipped_reason=f"extract_failed: {exc}",
         )
-
-    try:
-        paragraphs = extract_paragraphs(
-            tei_xml,
-            min_chars=settings.para_min_chars,
-            max_chars=settings.para_max_chars,
-            merge_splits=settings.para_merge_splits,
-            formula_placeholder=settings.para_formula_placeholder,
-            min_median_coord_h=settings.para_min_median_coord_h,
-            min_median_coord_h_auto_ratio=settings.para_min_median_coord_h_auto_ratio,
-            connector_max_chars=settings.para_connector_max_chars,
-            math_newlines=settings.para_math_newlines,
-            skip_algorithms=settings.para_skip_algorithms,
-            strip_plot_axis_prefix=settings.para_strip_plot_axis_prefix,
-            skip_captions=settings.para_skip_captions,
-        )
-    except ValueError as exc:
+    except (ValueError, RuntimeError) as exc:
         return ItemResult(
             item_key=item_key,
             title=title,
@@ -242,7 +231,7 @@ def process_item_no_translation(
             paragraphs_processed=0,
             annotations_planned=0,
             annotations_created=0,
-            skipped_reason=f"tei_parse_failed: {exc}",
+            skipped_reason=f"extract_failed: {exc}",
         )
 
     try:

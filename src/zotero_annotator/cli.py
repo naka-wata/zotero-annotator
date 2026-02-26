@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import base64
 import json
+from hashlib import sha1
 import statistics
 from pathlib import Path
 from typing import List, Optional
@@ -16,7 +18,14 @@ from zotero_annotator.config import get_core_settings, get_translation_settings
 from zotero_annotator.pipeline import build_annotation_payload, run_no_translation
 from zotero_annotator.services.annotation_position import build_note_position
 from zotero_annotator.services.paragraphs import estimate_coord_h_threshold, extract_paragraphs
+from zotero_annotator.services.paragraph_extractor import extract_paragraphs_from_pdf_bytes
 from zotero_annotator.services.pdf_pages import get_pdf_page_sizes
+from zotero_annotator.services.pymupdf_paragraphs import ExtractionConfig as PyMuPDFExtractionConfig
+from zotero_annotator.services.pymupdf_paragraphs import (
+    extract_paragraphs_from_pymupdf_dict,
+    extract_paragraphs_pymupdf_bytes,
+    paragraphs_to_xml,
+)
 from zotero_annotator.services.translators.factory import build_translator
 from zotero_annotator.services.translators.base import TranslationError
 
@@ -558,6 +567,350 @@ def dev_grobid(
         zotero.close()
 
 
+@dev_app.command("dump-xml")
+def dev_dump_xml(
+    item_key: str = typer.Option(..., "--item-key", help="Target item key / 対象アイテムキー"),
+    out_grobid: Path = typer.Option(Path("grobid.tei.xml"), "--out-grobid", help="Output GROBID TEI path / GROBID TEI出力先"),
+    out_pymupdf: Path = typer.Option(
+        Path("pymupdf.paragraphs.xml"),
+        "--out-pymupdf",
+        help="Output PyMuPDF paragraphs XML path / PyMuPDF段落XML出力先",
+    ),
+    drop_captions: bool = typer.Option(
+        False, "--drop-captions", help="Drop figure/table captions in PyMuPDF output / PyMuPDF側でキャプション除外"
+    ),
+) -> None:
+    """
+    Dump two XML files from the same PDF attachment:
+    - GROBID TEI (true TEI XML)
+    - PyMuPDF extracted paragraphs (tool-internal XML; not TEI)
+    """
+
+    def fail(stage: str, detail: str) -> None:
+        console.print(f"[red]ERROR[/red] {stage}: {detail}")
+        raise typer.Exit(code=1)
+
+    settings = get_core_settings()
+    zotero = ZoteroClient(
+        base_url=settings.zotero_base_url,
+        api_key=settings.z_api_key,
+        scope=settings.z_scope,
+        library_id=settings.z_id,
+    )
+    grobid = GrobidClient(
+        base_url=settings.grobid_url,
+        timeout_seconds=settings.grobid_timeout_seconds,
+    )
+    try:
+        try:
+            item = zotero.get_item(item_key)
+        except httpx.HTTPError as exc:
+            fail("Zotero connection failed", f"item lookup failed item_key={item_key} detail={exc}")
+
+        item_title = (item.get("data") or {}).get("title") or ""
+
+        try:
+            children = zotero.list_children(item_key)
+        except httpx.HTTPError as exc:
+            fail("Zotero connection failed", f"children fetch failed item_key={item_key} detail={exc}")
+
+        pdf = zotero.pick_pdf_attachment(children)
+        if not pdf:
+            fail("PDF attachment missing", f"item_key={item_key}")
+        pdf_key = pdf.get("key") or ""
+
+        try:
+            pdf_bytes = zotero.download_attachment(zotero.build_file_url(pdf_key))
+        except httpx.HTTPError as exc:
+            fail("Zotero connection failed", f"pdf download failed pdf_key={pdf_key} detail={exc}")
+
+        # 1) GROBID TEI XML
+        try:
+            tei_xml = grobid.process_fulltext(pdf_bytes, tei_coordinates="p")
+        except httpx.HTTPError as exc:
+            fail("GROBID failed", f"pdf_key={pdf_key} detail={exc}")
+        out_grobid.write_text(tei_xml, encoding="utf-8")
+
+        # 2) PyMuPDF paragraphs XML (not TEI)
+        # NOTE: PyMuPDF backend now marks captions as `is_caption` instead of dropping at extraction time.
+        cfg = PyMuPDFExtractionConfig()
+        paras = extract_paragraphs_pymupdf_bytes(pdf_bytes, config=cfg)
+        if drop_captions:
+            paras = [p for p in paras if not p.get("is_caption")]
+        out_pymupdf.write_text(paragraphs_to_xml(paras), encoding="utf-8")
+
+        console.print(
+            f"[green]Wrote[/green] grobid={out_grobid} pymupdf={out_pymupdf} "
+            f"item_key={item_key} pdf_key={pdf_key} title={item_title}",
+            highlight=False,
+        )
+    finally:
+        grobid.close()
+        zotero.close()
+
+
+@dev_app.command("dump-pymupdf-raw-text")
+def dev_dump_pymupdf_raw_text(
+    item_key: str = typer.Option(..., "--item-key", help="Target item key / 対象アイテムキー"),
+    out: Optional[Path] = typer.Option(
+        None,
+        "--out",
+        help="Output JSON path / 出力JSONパス（省略時は pymupdf.raw.<item_key>.json）",
+    ),
+    out_text: Optional[Path] = typer.Option(
+        None,
+        "--out-text",
+        help="Optional output plain text path / 追加でプレーンテキストも出力したい場合のパス",
+    ),
+) -> None:
+    """
+    Dump PyMuPDF page-level raw text WITHOUT paragraphization/filters.
+
+    This is intended to debug whether missing content happens before or after
+    our paragraph detection pipeline.
+    """
+
+    def fail(stage: str, detail: str) -> None:
+        console.print(f"[red]ERROR[/red] {stage}: {detail}")
+        raise typer.Exit(code=1)
+
+    try:
+        import fitz  # type: ignore
+    except Exception as exc:
+        fail("PyMuPDF import failed", f"detail={exc}")
+        return
+
+    settings = get_core_settings()
+    zotero = ZoteroClient(
+        base_url=settings.zotero_base_url,
+        api_key=settings.z_api_key,
+        scope=settings.z_scope,
+        library_id=settings.z_id,
+    )
+    try:
+        try:
+            item = zotero.get_item(item_key)
+        except httpx.HTTPError as exc:
+            fail("Zotero connection failed", f"item lookup failed item_key={item_key} detail={exc}")
+
+        item_title = (item.get("data") or {}).get("title") or ""
+
+        try:
+            children = zotero.list_children(item_key)
+        except httpx.HTTPError as exc:
+            fail("Zotero connection failed", f"children fetch failed item_key={item_key} detail={exc}")
+
+        pdf = zotero.pick_pdf_attachment(children)
+        if not pdf:
+            fail("PDF attachment missing", f"item_key={item_key}")
+        pdf_key = pdf.get("key") or ""
+
+        try:
+            pdf_bytes = zotero.download_attachment(zotero.build_file_url(pdf_key))
+        except httpx.HTTPError as exc:
+            fail("Zotero connection failed", f"pdf download failed pdf_key={pdf_key} detail={exc}")
+
+        doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+        try:
+            pages = []
+            total_chars = 0
+            for page_index in range(doc.page_count):
+                page = doc.load_page(page_index)
+                text = page.get_text("text") or ""
+                # Replace C0 control characters (except TAB/LF/CR) to keep output portable.
+                text = "".join(
+                    ch if (ord(ch) >= 0x20 or ord(ch) in (0x09, 0x0A, 0x0D)) else " " for ch in text
+                )
+                chars = len(text)
+                total_chars += chars
+                pages.append({"page": page_index + 1, "chars": chars, "text": text})
+        finally:
+            doc.close()
+
+        payload = {
+            "item_key": item_key,
+            "pdf_key": pdf_key,
+            "title": item_title,
+            "page_count": len(pages),
+            "total_chars": total_chars,
+            "pages": pages,
+        }
+
+        out_path = out or Path(f"pymupdf.raw.{item_key}.json")
+        out_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+        if out_text:
+            chunks = []
+            for p in pages:
+                chunks.append(f"=== PAGE {p['page']} (chars={p['chars']}) ===\n")
+                chunks.append(p["text"])
+                if not str(p["text"]).endswith("\n"):
+                    chunks.append("\n")
+                chunks.append("\n")
+            out_text.write_text("".join(chunks), encoding="utf-8")
+
+        console.print(
+            f"[green]Wrote[/green] {out_path}"
+            + (f" and {out_text}" if out_text else "")
+            + f" item_key={item_key} pdf_key={pdf_key} title={item_title} total_chars={total_chars}",
+            highlight=False,
+        )
+    finally:
+        zotero.close()
+
+
+@dev_app.command("dump-pymupdf-dict")
+def dev_dump_pymupdf_dict(
+    item_key: str = typer.Option(..., "--item-key", help="Target item key / 対象アイテムキー"),
+    out: Optional[Path] = typer.Option(
+        None,
+        "--out",
+        help="Output JSON path / 出力JSONパス（省略時は pymupdf.dict.<item_key>.json）",
+    ),
+    include_binary: bool = typer.Option(
+        False,
+        "--include-binary",
+        help="Include binary blobs (base64) in JSON / バイナリ(bytes)もbase64でJSONに含める（巨大化注意）",
+    ),
+) -> None:
+    """
+    Dump PyMuPDF page.get_text(\"dict\") outputs WITHOUT any processing.
+
+    This is the closest to \"throw PDF into PyMuPDF and dump the raw result\" while still
+    fetching the PDF from Zotero by item-key.
+    """
+
+    def fail(stage: str, detail: str) -> None:
+        console.print(f"[red]ERROR[/red] {stage}: {detail}")
+        raise typer.Exit(code=1)
+
+    try:
+        import fitz  # type: ignore
+    except Exception as exc:
+        fail("PyMuPDF import failed", f"detail={exc}")
+        return
+
+    settings = get_core_settings()
+    zotero = ZoteroClient(
+        base_url=settings.zotero_base_url,
+        api_key=settings.z_api_key,
+        scope=settings.z_scope,
+        library_id=settings.z_id,
+    )
+    try:
+        try:
+            item = zotero.get_item(item_key)
+        except httpx.HTTPError as exc:
+            fail("Zotero connection failed", f"item lookup failed item_key={item_key} detail={exc}")
+
+        item_title = (item.get("data") or {}).get("title") or ""
+
+        try:
+            children = zotero.list_children(item_key)
+        except httpx.HTTPError as exc:
+            fail("Zotero connection failed", f"children fetch failed item_key={item_key} detail={exc}")
+
+        pdf = zotero.pick_pdf_attachment(children)
+        if not pdf:
+            fail("PDF attachment missing", f"item_key={item_key}")
+        pdf_key = pdf.get("key") or ""
+
+        try:
+            pdf_bytes = zotero.download_attachment(zotero.build_file_url(pdf_key))
+        except httpx.HTTPError as exc:
+            fail("Zotero connection failed", f"pdf download failed pdf_key={pdf_key} detail={exc}")
+
+        doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+        try:
+            pages = []
+            for page_index in range(doc.page_count):
+                page = doc.load_page(page_index)
+                pages.append(
+                    {
+                        "page": page_index + 1,
+                        "width": float(page.rect.width),
+                        "height": float(page.rect.height),
+                        "dict": page.get_text("dict"),
+                    }
+                )
+        finally:
+            doc.close()
+
+        payload = {
+            "item_key": item_key,
+            "pdf_key": pdf_key,
+            "title": item_title,
+            "page_count": len(pages),
+            "pages": pages,
+        }
+
+        out_path = out or Path(f"pymupdf.dict.{item_key}.json")
+        def _json_default(o: object) -> object:
+            # PyMuPDF dict can include image bytes; JSON can't encode bytes.
+            if isinstance(o, (bytes, bytearray)):
+                b = bytes(o)
+                h = sha1(b).hexdigest()
+                if include_binary:
+                    return {
+                        "__type__": "bytes",
+                        "encoding": "base64",
+                        "len": len(b),
+                        "sha1": h,
+                        "data": base64.b64encode(b).decode("ascii"),
+                    }
+                return {"__type__": "bytes", "len": len(b), "sha1": h}
+            # Fallback: string representation
+            return str(o)
+
+        out_path.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2, default=_json_default),
+            encoding="utf-8",
+        )
+
+        console.print(
+            f"[green]Wrote[/green] {out_path} item_key={item_key} pdf_key={pdf_key} title={item_title} pages={len(pages)}",
+            highlight=False,
+        )
+    finally:
+        zotero.close()
+
+
+@dev_app.command("reconstruct-from-pymupdf-dict")
+def dev_reconstruct_from_pymupdf_dict(
+    in_path: Path = typer.Option(..., "--in", help="Input pymupdf.dict JSON path / pymupdf.dict JSON入力パス"),
+    out_xml: Path = typer.Option(
+        Path("pymupdf.paragraphs.fromdict.xml"),
+        "--out-xml",
+        help="Output paragraphs XML path / 段落XML出力先",
+    ),
+    out_json: Optional[Path] = typer.Option(
+        None,
+        "--out-json",
+        help="Optional output paragraphs JSON path / 段落JSON出力先（任意）",
+    ),
+    drop_captions: bool = typer.Option(
+        False,
+        "--drop-captions",
+        help="Drop figure/table captions / キャプション（Figure/Table）を除外",
+    ),
+) -> None:
+    """
+    Reconstruct paragraphs from a dumped `page.get_text('dict')` JSON.
+
+    This is offline and does not require Zotero/GROBID access.
+    """
+    payload = json.loads(in_path.read_text(encoding="utf-8"))
+    paras = extract_paragraphs_from_pymupdf_dict(payload, config=PyMuPDFExtractionConfig())
+    if drop_captions:
+        paras = [p for p in paras if not p.get("is_caption")]
+
+    out_xml.write_text(paragraphs_to_xml(paras), encoding="utf-8")
+    if out_json:
+        out_json.write_text(json.dumps(paras, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    console.print(f"[green]Wrote[/green] {out_xml}" + (f" and {out_json}" if out_json else ""), highlight=False)
+
+
 # Dev command to inspect extracted paragraphs (段落抽出結果を確認する開発用コマンド)
 @dev_app.command("paragraphs")
 def dev_paragraphs(
@@ -921,6 +1274,66 @@ def dev_delete_broken_annotations(
 
         console.print(
             f"[green]DONE[/green] item_key={item_key} pdf_key={pdf_key} broken={len(broken)} deleted={deleted}",
+            highlight=False,
+        )
+    finally:
+        zotero.close()
+
+
+@dev_app.command("delete-all-annotations")
+def dev_delete_all_annotations(
+    item_key: str = typer.Option(..., "--item-key", help="Target item key / 対象アイテムキー"),
+    read_only: bool = typer.Option(
+        True, "--read-only/--write", help="Do not write to Zotero / Zoteroに書き込まない"
+    ),
+) -> None:
+    """Delete all annotations for the PDF attachment (PDF添付の全注釈を削除する)."""
+
+    def fail(stage: str, detail: str) -> None:
+        console.print(f"[red]ERROR[/red] {stage}: {detail}")
+        raise typer.Exit(code=1)
+
+    settings = get_core_settings()
+    zotero = ZoteroClient(
+        base_url=settings.zotero_base_url,
+        api_key=settings.z_api_key,
+        scope=settings.z_scope,
+        library_id=settings.z_id,
+    )
+    try:
+        try:
+            children = zotero.list_children(item_key)
+        except httpx.HTTPError as exc:
+            fail("Zotero connection failed", f"children fetch failed item_key={item_key} detail={exc}")
+
+        pdf = zotero.pick_pdf_attachment(children)
+        if not pdf:
+            fail("PDF attachment missing", f"item_key={item_key}")
+        pdf_key = pdf.get("key") or ""
+
+        anns = list(zotero.iter_annotations(parent_key=pdf_key, limit_per_page=100))
+        total = len(anns)
+        if read_only:
+            console.print(
+                f"[cyan]READ-ONLY[/cyan] item_key={item_key} pdf_key={pdf_key} annotations={total}",
+                highlight=False,
+            )
+            for ann in anns[:10]:
+                console.print(f"- annotation_key={ann.get('key')}", highlight=False)
+            return
+
+        deleted = 0
+        for ann in anns:
+            ann_key = ann.get("key") or ""
+            version = ann.get("version")
+            try:
+                zotero.delete_item(item_key=ann_key, version=version if isinstance(version, int) else None)
+                deleted += 1
+            except httpx.HTTPError as exc:
+                console.print(f"[yellow]WARN[/yellow] delete failed annotation_key={ann_key} detail={exc}", highlight=False)
+
+        console.print(
+            f"[green]DONE[/green] item_key={item_key} pdf_key={pdf_key} annotations={total} deleted={deleted}",
             highlight=False,
         )
     finally:
