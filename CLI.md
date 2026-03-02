@@ -11,10 +11,17 @@ UV_LINK_MODE=copy uv sync --no-editable
 source .venv/bin/activate
 ```
 
+## コマンドの役割（run / base / translate）
+
+- `base`: 翻訳なし運用の正規ルート（原文アノテーションのみ作成）
+- `run`: メイン実行コマンド（既定は翻訳あり）
+- `translate`: 翻訳処理の役割（`run --translate` と `dev translate` で利用）
+
 ## トップレベルコマンド
 
 - `zotero-annotator search`
 - `zotero-annotator run`
+- `zotero-annotator base`
 - `zotero-annotator dev ...`
 
 ---
@@ -49,6 +56,7 @@ zotero-annotator search --tag to-translate --max-items 5
 注意:
 
 - `--tag` と `--item-key` は同時指定不可
+- 翻訳なし運用は `base` を使用（`run --no-translate` は互換用・deprecated）
 - `TRANSLATOR_PROVIDER=openai` は未実装
 - 壊れ注釈 = `annotationSortIndex` / `annotationPageLabel` / `annotationPosition` の欠落注釈
 
@@ -56,9 +64,35 @@ zotero-annotator search --tag to-translate --max-items 5
 
 ```bash
 zotero-annotator run --read-only --max-items 1
-zotero-annotator run --write --no-translate --item-key ABCD1234
 zotero-annotator run --write --delete-broken --item-key ABCD1234
 ```
+
+---
+
+## `zotero-annotator base`
+
+翻訳なしで原文アノテーションを書き込みます（`run --no-translate` と同等挙動）。
+
+- `--tag TEXT`: タグ指定実行
+- `--item-key TEXT`（複数可）: item 指定実行
+- `--max-items INTEGER`: 処理件数上限（既定 `10`）
+- `--read-only/--write`: 書き込み有無（既定 `--write`）
+- `--delete-broken`: 実行前に壊れ注釈を削除
+- `--keep-broken`: 壊れ注釈削除を抑止（設定上書き）
+
+例:
+
+```bash
+zotero-annotator base --write --item-key ABCD1234
+```
+
+互換用（deprecated）:
+
+```bash
+zotero-annotator run --write --no-translate --item-key ABCD1234
+```
+
+注記: `run --no-translate` は後方互換のため残していますが、将来削除予定です。
 
 ---
 

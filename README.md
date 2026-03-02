@@ -53,11 +53,13 @@ DEEPL_API_KEY=YOUR_DEEPL_API_KEY
 zotero-annotator run --read-only --max-items 1
 
 # 実書き込み（翻訳なし）
-zotero-annotator run --write --no-translate --max-items 1
+zotero-annotator base --write --max-items 1
 
 # 単一論文を実行
-zotero-annotator run --write --item-key ABCD1234 --no-translate
+zotero-annotator base --write --item-key ABCD1234
 ```
+
+注意: `run --no-translate` は後方互換のため残していますが、非推奨（deprecated）で将来削除予定です。翻訳なし運用は `base` を使用してください。
 
 ## Fixed beta behavior
 
