@@ -195,6 +195,12 @@ def run(
         help="Do not delete broken annotations (override env) / 壊れ注釈を削除しない",
     ),
 ) -> None:
+    if not translate:
+        console.print(
+            "[yellow]WARN[/yellow] run --no-translate は互換用で、将来削除する可能性がある非推奨オプションです。"
+            " 翻訳なしは zotero-annotator base --write --item-key ABCD1234 を使ってください。"
+        )
+
     _run_annotations_command(
         tag=tag,
         item_keys=item_keys,
