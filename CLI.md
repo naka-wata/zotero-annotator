@@ -100,12 +100,14 @@ zotero-annotator base --write --item-key ABCD1234
 - `translate` には `--tag` はありません（対象分岐を増やさないため）。
 - `--item-key` 未指定時は `Z_BASE_DONE_TAG`（既定 `base-done`）付き item を一括処理します。
 - **新規注釈は作成せず、既存注釈の `annotationComment`（または `note` 本文）だけ更新します。**
+- 翻訳元は PyMuPDF 再抽出テキストではなく、Zotero 上の既存ノート本文（手修正済み）を使います。
 
 例:
 
 ```bash
+zotero-annotator base --write --item-key ABCD1234
 zotero-annotator translate --write --item-key ABCD1234
-zotero-annotator translate --write --max-items 20
+zotero-annotator translate --write
 ```
 
 推奨フロー（base -> edit -> translate）:

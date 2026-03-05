@@ -96,7 +96,7 @@ def run_translate_existing_notes(
                             annotations_targeted=0,
                             annotations_processed=0,
                             annotations_updated=0,
-                            skipped_reason=f"item_lookup_failed item_key={item_key}: {exc}",
+                            skipped_reason=f"stage=fetch_item item_lookup_failed item_key={item_key}: {exc}",
                         )
                     )
                     continue
@@ -158,7 +158,7 @@ def process_item_translate_existing_notes(
             annotations_targeted=0,
             annotations_processed=0,
             annotations_updated=0,
-            skipped_reason=f"children_fetch_failed item_key={item_key}: {exc}",
+            skipped_reason=f"stage=fetch_children children_fetch_failed item_key={item_key}: {exc}",
         )
 
     pdf = zotero.pick_pdf_attachment(children)
@@ -171,7 +171,7 @@ def process_item_translate_existing_notes(
             annotations_targeted=0,
             annotations_processed=0,
             annotations_updated=0,
-            skipped_reason=f"no_pdf_attachment item_key={item_key}",
+            skipped_reason=f"stage=fetch_pdf no_pdf_attachment item_key={item_key}",
         )
 
     pdf_key = pdf.get("key") or ""
@@ -186,13 +186,13 @@ def process_item_translate_existing_notes(
             annotations_targeted=0,
             annotations_processed=0,
             annotations_updated=0,
-            skipped_reason=f"list_annotations_failed item_key={item_key} pdf_key={pdf_key}: {exc}",
+            skipped_reason=f"stage=fetch_annotations list_annotations_failed item_key={item_key} pdf_key={pdf_key}: {exc}",
         )
 
     targeted = 0
     processed = 0
     updated = 0
-    update_attempted = False
+    write_enabled = not dry_run
 
     for ann in annotations:
         ann_key = ann.get("key") or ""
@@ -205,21 +205,25 @@ def process_item_translate_existing_notes(
         )
         if invalid_para_tags:
             warnings.append(
-                f"invalid_para_tags item_key={item_key} annotation_key={ann_key} tags={invalid_para_tags[:3]}"
+                f"stage=match invalid_para_tags item_key={item_key} annotation_key={ann_key} tags={invalid_para_tags[:3]}"
             )
         if not para_tags:
-            warnings.append(f"skip_no_para_hash_tag item_key={item_key} annotation_key={ann_key}")
+            warnings.append(
+                f"stage=match skip_no_para_hash_tag item_key={item_key} annotation_key={ann_key}"
+            )
             continue
         targeted += 1
         if len(para_tags) > 1:
             warnings.append(
-                f"multiple_para_tags item_key={item_key} annotation_key={ann_key} count={len(para_tags)}"
+                f"stage=match multiple_para_tags item_key={item_key} annotation_key={ann_key} count={len(para_tags)}"
             )
 
         body_field = _detect_annotation_body_field(data)
         source_text = str(data.get(body_field) or "").strip()
         if not source_text:
-            warnings.append(f"empty_source item_key={item_key} annotation_key={ann_key} field={body_field}")
+            warnings.append(
+                f"stage=source empty_source item_key={item_key} annotation_key={ann_key} field={body_field}"
+            )
             continue
 
         try:
@@ -234,7 +238,7 @@ def process_item_translate_existing_notes(
                 annotations_processed=processed,
                 annotations_updated=updated,
                 skipped_reason=(
-                    f"translation_failed item_key={item_key} annotation_key={ann_key} "
+                    f"stage=translate translation_failed item_key={item_key} annotation_key={ann_key} "
                     f"kind={exc.kind} status={exc.status_code}: {exc}"
                 ),
                 warnings=warnings,
@@ -249,72 +253,43 @@ def process_item_translate_existing_notes(
                 annotations_processed=processed,
                 annotations_updated=updated,
                 skipped_reason=(
-                    f"translation_unexpected_error item_key={item_key} annotation_key={ann_key}: {exc}"
+                    f"stage=translate translation_unexpected_error item_key={item_key} annotation_key={ann_key}: {exc}"
                 ),
                 warnings=warnings,
             )
         processed += 1
 
-        if dry_run:
-            warnings.append(
-                f"read_only_no_update item_key={item_key} annotation_key={ann_key} field={body_field}"
-            )
-            continue
-
-        patch = dict(data)
-        patch.setdefault("key", ann_key)
-        patch.setdefault("itemType", "annotation")
-        patch[body_field] = translated_text
-
-        try:
-            update_attempted = True
-            zotero.update_item(item_key=ann_key, data=patch, version=version if isinstance(version, int) else None)
-            updated += 1
-        except httpx.HTTPError as exc:
-            return TranslationItemResult(
-                item_key=item_key,
-                title=title,
-                pdf_key=pdf_key,
-                annotations_total=len(annotations),
-                annotations_targeted=targeted,
-                annotations_processed=processed,
-                annotations_updated=updated,
-                skipped_reason=f"annotation_update_failed item_key={item_key} annotation_key={ann_key}: {exc}",
-                warnings=warnings,
-            )
-        except Exception as exc:
-            return TranslationItemResult(
-                item_key=item_key,
-                title=title,
-                pdf_key=pdf_key,
-                annotations_total=len(annotations),
-                annotations_targeted=targeted,
-                annotations_processed=processed,
-                annotations_updated=updated,
-                skipped_reason=(
-                    f"annotation_update_unexpected_error item_key={item_key} annotation_key={ann_key}: {exc}"
-                ),
-                warnings=warnings,
-            )
-
-    if dry_run and update_attempted:
-        return TranslationItemResult(
+        updated_now, warning_message, error_message = _apply_translated_annotation_update(
+            zotero=zotero,
+            write_enabled=write_enabled,
             item_key=item_key,
-            title=title,
-            pdf_key=pdf_key,
-            annotations_total=len(annotations),
-            annotations_targeted=targeted,
-            annotations_processed=processed,
-            annotations_updated=updated,
-            skipped_reason=f"internal_error_update_attempted_in_read_only item_key={item_key}",
-            warnings=warnings,
+            annotation_key=ann_key,
+            body_field=body_field,
+            annotation_data=data,
+            version=version,
+            translated_text=translated_text,
         )
+        if warning_message:
+            warnings.append(warning_message)
+        if error_message:
+            return TranslationItemResult(
+                item_key=item_key,
+                title=title,
+                pdf_key=pdf_key,
+                annotations_total=len(annotations),
+                annotations_targeted=targeted,
+                annotations_processed=processed,
+                annotations_updated=updated,
+                skipped_reason=error_message,
+                warnings=warnings,
+            )
+        updated += updated_now
 
     skipped_reason = None
     if targeted == 0:
-        skipped_reason = f"no_para_tagged_annotations item_key={item_key} pdf_key={pdf_key}"
+        skipped_reason = f"stage=match no_para_tagged_annotations item_key={item_key} pdf_key={pdf_key}"
     elif processed == 0:
-        skipped_reason = f"no_valid_translation_targets item_key={item_key} pdf_key={pdf_key}"
+        skipped_reason = f"stage=source no_valid_translation_targets item_key={item_key} pdf_key={pdf_key}"
 
     return TranslationItemResult(
         item_key=item_key,
@@ -929,6 +904,50 @@ def _detect_annotation_body_field(data: Dict[str, Any]) -> str:
     if "note" in data:
         return "note"
     return "annotationComment"
+
+
+def _apply_translated_annotation_update(
+    *,
+    zotero: ZoteroClient,
+    write_enabled: bool,
+    item_key: str,
+    annotation_key: str,
+    body_field: str,
+    annotation_data: Dict[str, Any],
+    version: Any,
+    translated_text: str,
+) -> tuple[int, Optional[str], Optional[str]]:
+    if not write_enabled:
+        return (
+            0,
+            f"stage=update read_only_no_update item_key={item_key} annotation_key={annotation_key} field={body_field}",
+            None,
+        )
+
+    patch = dict(annotation_data)
+    patch.setdefault("key", annotation_key)
+    patch.setdefault("itemType", "annotation")
+    patch[body_field] = translated_text
+
+    try:
+        zotero.update_item(
+            item_key=annotation_key,
+            data=patch,
+            version=version if isinstance(version, int) else None,
+        )
+        return 1, None, None
+    except httpx.HTTPError as exc:
+        return (
+            0,
+            None,
+            f"stage=update annotation_update_failed item_key={item_key} annotation_key={annotation_key}: {exc}",
+        )
+    except Exception as exc:
+        return (
+            0,
+            None,
+            f"stage=update annotation_update_unexpected_error item_key={item_key} annotation_key={annotation_key}: {exc}",
+        )
 
 
 _PARA_HASH_RE = re.compile(r"^[0-9a-f]{40}$")

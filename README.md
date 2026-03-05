@@ -73,6 +73,15 @@ zotero-annotator translate --write --item-key ABCD1234
 - `translate` には `--tag` がありません。対象選択を単純化し、タグ運用の分岐を減らすためです。
 - `--item-key` を省略した場合は `Z_BASE_DONE_TAG`（既定: `base-done`）の item をまとめて処理します。
 - **`translate` は新規注釈を作成せず、既存注釈の本文（`annotationComment` / `note`）だけを更新します。**
+- 翻訳元は PyMuPDF の再抽出結果ではなく、Zotero 上の既存ノート本文（手修正済み）です。
+
+例:
+
+```bash
+zotero-annotator base --write --item-key ABCD1234
+zotero-annotator translate --write --item-key ABCD1234
+zotero-annotator translate --write
+```
 
 ## Fixed beta behavior
 
