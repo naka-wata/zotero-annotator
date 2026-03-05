@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Literal, Optional, Sequence, Set
 
@@ -191,16 +192,29 @@ def process_item_translate_existing_notes(
     targeted = 0
     processed = 0
     updated = 0
+    update_attempted = False
 
     for ann in annotations:
         ann_key = ann.get("key") or ""
         version = ann.get("version")
         data = dict(ann.get("data") or {})
         tags = zotero.extract_tag_names(ann)
-        para_tags = [t for t in tags if isinstance(t, str) and t.startswith(settings.dedup_tag_prefix)]
+        para_tags, invalid_para_tags = _split_para_tags(
+            tags=tags,
+            dedup_prefix=settings.dedup_tag_prefix,
+        )
+        if invalid_para_tags:
+            warnings.append(
+                f"invalid_para_tags item_key={item_key} annotation_key={ann_key} tags={invalid_para_tags[:3]}"
+            )
         if not para_tags:
+            warnings.append(f"skip_no_para_hash_tag item_key={item_key} annotation_key={ann_key}")
             continue
         targeted += 1
+        if len(para_tags) > 1:
+            warnings.append(
+                f"multiple_para_tags item_key={item_key} annotation_key={ann_key} count={len(para_tags)}"
+            )
 
         body_field = _detect_annotation_body_field(data)
         source_text = str(data.get(body_field) or "").strip()
@@ -225,6 +239,20 @@ def process_item_translate_existing_notes(
                 ),
                 warnings=warnings,
             )
+        except Exception as exc:
+            return TranslationItemResult(
+                item_key=item_key,
+                title=title,
+                pdf_key=pdf_key,
+                annotations_total=len(annotations),
+                annotations_targeted=targeted,
+                annotations_processed=processed,
+                annotations_updated=updated,
+                skipped_reason=(
+                    f"translation_unexpected_error item_key={item_key} annotation_key={ann_key}: {exc}"
+                ),
+                warnings=warnings,
+            )
         processed += 1
 
         if dry_run:
@@ -239,6 +267,7 @@ def process_item_translate_existing_notes(
         patch[body_field] = translated_text
 
         try:
+            update_attempted = True
             zotero.update_item(item_key=ann_key, data=patch, version=version if isinstance(version, int) else None)
             updated += 1
         except httpx.HTTPError as exc:
@@ -253,6 +282,39 @@ def process_item_translate_existing_notes(
                 skipped_reason=f"annotation_update_failed item_key={item_key} annotation_key={ann_key}: {exc}",
                 warnings=warnings,
             )
+        except Exception as exc:
+            return TranslationItemResult(
+                item_key=item_key,
+                title=title,
+                pdf_key=pdf_key,
+                annotations_total=len(annotations),
+                annotations_targeted=targeted,
+                annotations_processed=processed,
+                annotations_updated=updated,
+                skipped_reason=(
+                    f"annotation_update_unexpected_error item_key={item_key} annotation_key={ann_key}: {exc}"
+                ),
+                warnings=warnings,
+            )
+
+    if dry_run and update_attempted:
+        return TranslationItemResult(
+            item_key=item_key,
+            title=title,
+            pdf_key=pdf_key,
+            annotations_total=len(annotations),
+            annotations_targeted=targeted,
+            annotations_processed=processed,
+            annotations_updated=updated,
+            skipped_reason=f"internal_error_update_attempted_in_read_only item_key={item_key}",
+            warnings=warnings,
+        )
+
+    skipped_reason = None
+    if targeted == 0:
+        skipped_reason = f"no_para_tagged_annotations item_key={item_key} pdf_key={pdf_key}"
+    elif processed == 0:
+        skipped_reason = f"no_valid_translation_targets item_key={item_key} pdf_key={pdf_key}"
 
     return TranslationItemResult(
         item_key=item_key,
@@ -262,6 +324,7 @@ def process_item_translate_existing_notes(
         annotations_targeted=targeted,
         annotations_processed=processed,
         annotations_updated=updated,
+        skipped_reason=skipped_reason,
         warnings=warnings,
     )
 
@@ -866,6 +929,23 @@ def _detect_annotation_body_field(data: Dict[str, Any]) -> str:
     if "note" in data:
         return "note"
     return "annotationComment"
+
+
+_PARA_HASH_RE = re.compile(r"^[0-9a-f]{40}$")
+
+
+def _split_para_tags(*, tags: List[str], dedup_prefix: str) -> tuple[List[str], List[str]]:
+    valid: List[str] = []
+    invalid: List[str] = []
+    for tag in tags:
+        if not isinstance(tag, str) or not tag.startswith(dedup_prefix):
+            continue
+        hash_part = tag[len(dedup_prefix) :].strip()
+        if _PARA_HASH_RE.fullmatch(hash_part):
+            valid.append(tag)
+        else:
+            invalid.append(tag)
+    return valid, invalid
 
 
 def build_annotation_payload(
