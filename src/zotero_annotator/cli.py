@@ -5,7 +5,7 @@ import json
 from hashlib import sha1
 import statistics
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 import httpx
 import typer
@@ -95,13 +95,11 @@ def search(
 
 
 # Main run command for the annotation pipeline (アノテーション処理パイプラインの実行コマンド)
-def _run_annotations_command(
+def _validate_run_options(
     *,
     tag: Optional[str],
     item_keys: Optional[List[str]],
     max_items: int,
-    read_only: bool,
-    translate: bool,
     delete_broken: bool,
     keep_broken: bool,
 ) -> None:
@@ -113,17 +111,60 @@ def _run_annotations_command(
     if delete_broken and keep_broken:
         raise typer.BadParameter("Specify at most one of --delete-broken or --keep-broken")
 
+
+def _build_translation_runtime(*, translate: bool) -> Tuple[Optional[object], str, str]:
+    if not translate:
+        return None, "", ""
+
+    tsettings = get_translation_settings()
+    translator = build_translator()
+    source_lang = (tsettings.source_lang or "").strip()
+    target_lang = tsettings.target_lang
+    return translator, source_lang, target_lang
+
+
+def _render_run_results(*, results: list[object], translate: bool) -> None:
+    # Print per-item summary (論文ごとの実行結果を表示)
+    for r in results:
+        if r.skipped_reason:
+            console.print(f"[yellow]SKIP[/yellow] {r.title} ({r.skipped_reason})")
+            continue
+        console.print(
+            f"[green]DONE[/green] {r.title} planned={r.annotations_planned} created={r.annotations_created} dup={r.paragraphs_skipped_duplicate}"
+        )
+        console.print(f"{r.title} の処理完了" if not translate else f"{r.title} の翻訳完了")
+        for w in (r.warnings or []):
+            console.print(f"[yellow]WARN[/yellow] {r.title} ({w})")
+
+
+def _run_annotations_command(
+    *,
+    tag: Optional[str],
+    item_keys: Optional[List[str]],
+    max_items: int,
+    read_only: bool,
+    translate: bool,
+    delete_broken: bool,
+    keep_broken: bool,
+) -> None:
     def fail(stage: str, detail: str) -> None:
         console.print(f"[red]ERROR[/red] {stage}: {detail}")
         raise typer.Exit(code=1)
+
+    _validate_run_options(
+        tag=tag,
+        item_keys=item_keys,
+        max_items=max_items,
+        delete_broken=delete_broken,
+        keep_broken=keep_broken,
+    )
 
     # Load runtime settings (.env から設定を読み込む)
     try:
         settings = get_core_settings()
         if settings.run_max_paragraphs_per_item < 1:
             raise typer.BadParameter("RUN_MAX_PARAGRAPHS_PER_ITEM must be >= 1")
-        tsettings = get_translation_settings() if translate else None
-        translator = build_translator() if translate else None
+        translator, source_lang, target_lang = _build_translation_runtime(translate=translate)
     except ValidationError as exc:
         fail("Invalid .env / environment variables", str(exc))
         return
@@ -131,8 +172,6 @@ def _run_annotations_command(
         fail("Translator provider error", str(exc))
         return
 
-    source_lang = ((tsettings.source_lang or "").strip() if tsettings else "")
-    target_lang = (tsettings.target_lang if tsettings else "")
     do_delete_broken = delete_broken or (not keep_broken and settings.run_delete_broken_annotations)
 
     # Run no-translation pipeline (翻訳なしパイプラインを実行)
@@ -154,17 +193,7 @@ def _run_annotations_command(
         fail("Pipeline crashed", str(exc))
         return
 
-    # Print per-item summary (論文ごとの実行結果を表示)
-    for r in results:
-        if r.skipped_reason:
-            console.print(f"[yellow]SKIP[/yellow] {r.title} ({r.skipped_reason})")
-            continue
-        console.print(
-            f"[green]DONE[/green] {r.title} planned={r.annotations_planned} created={r.annotations_created} dup={r.paragraphs_skipped_duplicate}"
-        )
-        console.print(f"{r.title} の処理完了" if not translate else f"{r.title} の翻訳完了")
-        for w in (r.warnings or []):
-            console.print(f"[yellow]WARN[/yellow] {r.title} ({w})")
+    _render_run_results(results=results, translate=translate)
 
 
 @app.command()
@@ -179,11 +208,6 @@ def run(
     read_only: bool = typer.Option(
         False, "--read-only/--write", help="Do not write to Zotero / Zoteroに書き込まない"
     ),
-    translate: bool = typer.Option(
-        True,
-        "--translate/--no-translate",
-        help="Translate before annotating / 注釈前に翻訳する",
-    ),
     delete_broken: bool = typer.Option(
         False,
         "--delete-broken",
@@ -195,18 +219,13 @@ def run(
         help="Do not delete broken annotations (override env) / 壊れ注釈を削除しない",
     ),
 ) -> None:
-    if not translate:
-        console.print(
-            "[yellow]WARN[/yellow] run --no-translate は互換用で、将来削除する可能性がある非推奨オプションです。"
-            " 翻訳なしは zotero-annotator base --write --item-key ABCD1234 を使ってください。"
-        )
-
+    """Run translation + annotation pipeline (翻訳込みで注釈を作成する)."""
     _run_annotations_command(
         tag=tag,
         item_keys=item_keys,
         max_items=max_items,
         read_only=read_only,
-        translate=translate,
+        translate=True,
         delete_broken=delete_broken,
         keep_broken=keep_broken,
     )

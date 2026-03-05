@@ -44,7 +44,7 @@ DEEPL_API_KEY=YOUR_DEEPL_API_KEY
 - `Z_API_KEY`
 - `TRANSLATOR_PROVIDER`（`deepl` 推奨）
 - `TARGET_LANG`
-- `DEEPL_API_KEY`（`--translate` を使う場合）
+- `DEEPL_API_KEY`（翻訳機能を使う場合）
 
 ## Quick start
 
@@ -59,7 +59,7 @@ zotero-annotator base --write --max-items 1
 zotero-annotator base --write --item-key ABCD1234
 ```
 
-注意: `run --no-translate` は後方互換のため残していますが、非推奨（deprecated）で将来削除予定です。翻訳なし運用は `base` を使用してください。
+注記: `run` は翻訳込み実行です。翻訳なし運用は `base` を使用してください。
 
 ## Fixed beta behavior
 
