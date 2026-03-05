@@ -28,7 +28,6 @@ class CoreSettings(_BaseEnvSettings):
     z_base_done_tag: str = Field("base-done", min_length=1, alias="Z_BASE_DONE_TAG")
     z_done_tag: str = Field("translated", min_length=1, alias="Z_DONE_TAG")
     z_remove_tag: str = Field("to-translate", min_length=1, alias="Z_REMOVE_TAG")
-    z_in_progress_tag: str = Field("translating", min_length=1, alias="Z_IN_PROGRESS_TAG")
 
     # Pipeline
     dedup_tag_prefix: str = "para:"
