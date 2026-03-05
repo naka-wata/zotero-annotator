@@ -89,13 +89,30 @@ zotero-annotator base --write --item-key ABCD1234
 
 ## `zotero-annotator translate`
 
-既存注釈を翻訳します。
+既存注釈の本文を in-place で翻訳更新します。
+
+- `--item-key TEXT`（複数可）: item 指定実行
+- `--max-items INTEGER`: 処理件数上限（既定 `10`）
+- `--read-only/--write`: 書き込み有無（既定 `--write`）
+
+仕様:
+
+- `translate` には `--tag` はありません（対象分岐を増やさないため）。
+- `--item-key` 未指定時は `Z_BASE_DONE_TAG`（既定 `base-done`）付き item を一括処理します。
+- **新規注釈は作成せず、既存注釈の `annotationComment`（または `note` 本文）だけ更新します。**
 
 例:
 
 ```bash
 zotero-annotator translate --write --item-key ABCD1234
+zotero-annotator translate --write --max-items 20
 ```
+
+推奨フロー（base -> edit -> translate）:
+
+1. `zotero-annotator base --write ...` で原文注釈を作成
+2. Zotero で必要な注釈だけ手修正
+3. `zotero-annotator translate --write ...` で本文を翻訳更新
 
 ---
 
