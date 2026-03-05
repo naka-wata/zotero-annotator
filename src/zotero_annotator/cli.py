@@ -266,6 +266,80 @@ def base(
     )
 
 
+@app.command()
+def translate(
+    item_keys: Optional[List[str]] = typer.Option(
+        None,
+        "--item-key",
+        help="Target item key (repeatable) / 対象item-key（複数指定可）",
+    ),
+    max_items: int = typer.Option(10, "--max-items", help="Max papers per run / 1回の最大論文数"),
+    read_only: bool = typer.Option(
+        False, "--read-only/--write", help="Do not write to Zotero / Zoteroに書き込まない"
+    ),
+) -> None:
+    """Translate command skeleton (翻訳コマンドの骨組み)."""
+    if max_items < 1:
+        raise typer.BadParameter("--max-items must be >= 1")
+
+    def fail(stage: str, detail: str) -> None:
+        console.print(f"[red]ERROR[/red] {stage}: {detail}")
+        raise typer.Exit(code=1)
+
+    try:
+        settings = get_core_settings()
+    except ValidationError as exc:
+        fail("Invalid .env / environment variables", str(exc))
+        return
+
+    zotero = ZoteroClient(
+        base_url=settings.zotero_base_url,
+        api_key=settings.z_api_key,
+        scope=settings.z_scope,
+        library_id=settings.z_id,
+    )
+    try:
+        selected_items: list[dict] = []
+        if item_keys:
+            seen = set()
+            ordered_keys: list[str] = []
+            for key in item_keys:
+                if key and key not in seen:
+                    seen.add(key)
+                    ordered_keys.append(key)
+            for key in ordered_keys:
+                try:
+                    selected_items.append(zotero.get_item(key))
+                except httpx.HTTPStatusError as exc:
+                    status = exc.response.status_code if exc.response is not None else "unknown"
+                    fail("Zotero item lookup failed", f"item_key={key} status={status}")
+                except httpx.HTTPError as exc:
+                    fail("Zotero connection failed", f"item_key={key} detail={exc}")
+        else:
+            try:
+                for item in zotero.iter_items_by_tag(tag=settings.z_target_tag, limit_per_page=100):
+                    selected_items.append(item)
+                    if len(selected_items) >= max_items:
+                        break
+            except httpx.HTTPError as exc:
+                fail("Zotero connection failed", f"tag={settings.z_target_tag} detail={exc}")
+
+        console.print(
+            f"[cyan]translate skeleton[/cyan] mode={'read-only' if read_only else 'write'} "
+            f"selected_items={len(selected_items)}"
+        )
+        for count, item in enumerate(selected_items, start=1):
+            key = item.get("key") or ""
+            title = (item.get("data") or {}).get("title") or ""
+            console.print(
+                f"{count:>2}. [bold cyan]item-key[/bold cyan] : [cyan]{key}[/cyan]  "
+                f"[bold green]title[/bold green] : [green]{title}[/green]"
+            )
+        console.print("[yellow]NOOP[/yellow] Translation updates are not implemented yet.")
+    finally:
+        zotero.close()
+
+
 
 # Dev command to annotate exactly one paragraph for position testing (位置検証のため1段落だけ注釈する開発用コマンド)
 @dev_app.command("annotate")
