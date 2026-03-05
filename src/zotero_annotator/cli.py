@@ -304,6 +304,7 @@ def translate(
         return
 
     try:
+        override_tag = None if item_keys else settings.z_base_done_tag
         results = run_translate_existing_notes(
             settings,
             dry_run=read_only,
@@ -311,6 +312,7 @@ def translate(
             translator=translator,
             source_lang=source_lang,
             target_lang=target_lang,
+            override_tag=override_tag,
             item_keys=item_keys,
         )
     except Exception as exc:

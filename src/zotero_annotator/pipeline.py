@@ -111,7 +111,7 @@ def run_translate_existing_notes(
                     )
                 )
         else:
-            tag = override_tag or settings.z_target_tag
+            tag = override_tag or settings.z_base_done_tag
             for index, item in enumerate(zotero.iter_items_by_tag(tag=tag, limit_per_page=100)):
                 if index >= max_items:
                     break
