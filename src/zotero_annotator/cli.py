@@ -5,7 +5,7 @@ import json
 from hashlib import sha1
 import statistics
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 import httpx
 import typer
@@ -95,33 +95,13 @@ def search(
 
 
 # Main run command for the annotation pipeline (アノテーション処理パイプラインの実行コマンド)
-@app.command()
-def run(
-    tag: Optional[str] = typer.Option(None, "--tag", help="Target tag override / 対象タグを上書き"),
-    item_keys: Optional[List[str]] = typer.Option(
-        None,
-        "--item-key",
-        help="Target item key (repeatable) / 対象item-key（複数指定可）",
-    ),
-    max_items: int = typer.Option(10, "--max-items", help="Max papers per run / 1回の最大論文数"),
-    read_only: bool = typer.Option(
-        False, "--read-only/--write", help="Do not write to Zotero / Zoteroに書き込まない"
-    ),
-    translate: bool = typer.Option(
-        True,
-        "--translate/--no-translate",
-        help="Translate before annotating / 注釈前に翻訳する",
-    ),
-    delete_broken: bool = typer.Option(
-        False,
-        "--delete-broken",
-        help="Delete broken annotations before processing / 処理前に壊れ注釈を削除する",
-    ),
-    keep_broken: bool = typer.Option(
-        False,
-        "--keep-broken",
-        help="Do not delete broken annotations (override env) / 壊れ注釈を削除しない",
-    ),
+def _validate_run_options(
+    *,
+    tag: Optional[str],
+    item_keys: Optional[List[str]],
+    max_items: int,
+    delete_broken: bool,
+    keep_broken: bool,
 ) -> None:
     # Validate numeric options (数値オプションのバリデーション)
     if max_items < 1:
@@ -131,17 +111,60 @@ def run(
     if delete_broken and keep_broken:
         raise typer.BadParameter("Specify at most one of --delete-broken or --keep-broken")
 
+
+def _build_translation_runtime(*, translate: bool) -> Tuple[Optional[object], str, str]:
+    if not translate:
+        return None, "", ""
+
+    tsettings = get_translation_settings()
+    translator = build_translator()
+    source_lang = (tsettings.source_lang or "").strip()
+    target_lang = tsettings.target_lang
+    return translator, source_lang, target_lang
+
+
+def _render_run_results(*, results: list[object], translate: bool) -> None:
+    # Print per-item summary (論文ごとの実行結果を表示)
+    for r in results:
+        if r.skipped_reason:
+            console.print(f"[yellow]SKIP[/yellow] {r.title} ({r.skipped_reason})")
+            continue
+        console.print(
+            f"[green]DONE[/green] {r.title} planned={r.annotations_planned} created={r.annotations_created} dup={r.paragraphs_skipped_duplicate}"
+        )
+        console.print(f"{r.title} の処理完了" if not translate else f"{r.title} の翻訳完了")
+        for w in (r.warnings or []):
+            console.print(f"[yellow]WARN[/yellow] {r.title} ({w})")
+
+
+def _run_annotations_command(
+    *,
+    tag: Optional[str],
+    item_keys: Optional[List[str]],
+    max_items: int,
+    read_only: bool,
+    translate: bool,
+    delete_broken: bool,
+    keep_broken: bool,
+) -> None:
     def fail(stage: str, detail: str) -> None:
         console.print(f"[red]ERROR[/red] {stage}: {detail}")
         raise typer.Exit(code=1)
+
+    _validate_run_options(
+        tag=tag,
+        item_keys=item_keys,
+        max_items=max_items,
+        delete_broken=delete_broken,
+        keep_broken=keep_broken,
+    )
 
     # Load runtime settings (.env から設定を読み込む)
     try:
         settings = get_core_settings()
         if settings.run_max_paragraphs_per_item < 1:
             raise typer.BadParameter("RUN_MAX_PARAGRAPHS_PER_ITEM must be >= 1")
-        tsettings = get_translation_settings() if translate else None
-        translator = build_translator() if translate else None
+        translator, source_lang, target_lang = _build_translation_runtime(translate=translate)
     except ValidationError as exc:
         fail("Invalid .env / environment variables", str(exc))
         return
@@ -149,8 +172,6 @@ def run(
         fail("Translator provider error", str(exc))
         return
 
-    source_lang = ((tsettings.source_lang or "").strip() if tsettings else "")
-    target_lang = (tsettings.target_lang if tsettings else "")
     do_delete_broken = delete_broken or (not keep_broken and settings.run_delete_broken_annotations)
 
     # Run no-translation pipeline (翻訳なしパイプラインを実行)
@@ -172,17 +193,77 @@ def run(
         fail("Pipeline crashed", str(exc))
         return
 
-    # Print per-item summary (論文ごとの実行結果を表示)
-    for r in results:
-        if r.skipped_reason:
-            console.print(f"[yellow]SKIP[/yellow] {r.title} ({r.skipped_reason})")
-            continue
-        console.print(
-            f"[green]DONE[/green] {r.title} planned={r.annotations_planned} created={r.annotations_created} dup={r.paragraphs_skipped_duplicate}"
-        )
-        console.print(f"{r.title} の処理完了" if not translate else f"{r.title} の翻訳完了")
-        for w in (r.warnings or []):
-            console.print(f"[yellow]WARN[/yellow] {r.title} ({w})")
+    _render_run_results(results=results, translate=translate)
+
+
+@app.command()
+def run(
+    tag: Optional[str] = typer.Option(None, "--tag", help="Target tag override / 対象タグを上書き"),
+    item_keys: Optional[List[str]] = typer.Option(
+        None,
+        "--item-key",
+        help="Target item key (repeatable) / 対象item-key（複数指定可）",
+    ),
+    max_items: int = typer.Option(10, "--max-items", help="Max papers per run / 1回の最大論文数"),
+    read_only: bool = typer.Option(
+        False, "--read-only/--write", help="Do not write to Zotero / Zoteroに書き込まない"
+    ),
+    delete_broken: bool = typer.Option(
+        False,
+        "--delete-broken",
+        help="Delete broken annotations before processing / 処理前に壊れ注釈を削除する",
+    ),
+    keep_broken: bool = typer.Option(
+        False,
+        "--keep-broken",
+        help="Do not delete broken annotations (override env) / 壊れ注釈を削除しない",
+    ),
+) -> None:
+    """Run translation + annotation pipeline (翻訳込みで注釈を作成する)."""
+    _run_annotations_command(
+        tag=tag,
+        item_keys=item_keys,
+        max_items=max_items,
+        read_only=read_only,
+        translate=True,
+        delete_broken=delete_broken,
+        keep_broken=keep_broken,
+    )
+
+
+@app.command()
+def base(
+    tag: Optional[str] = typer.Option(None, "--tag", help="Target tag override / 対象タグを上書き"),
+    item_keys: Optional[List[str]] = typer.Option(
+        None,
+        "--item-key",
+        help="Target item key (repeatable) / 対象item-key（複数指定可）",
+    ),
+    max_items: int = typer.Option(10, "--max-items", help="Max papers per run / 1回の最大論文数"),
+    read_only: bool = typer.Option(
+        False, "--read-only/--write", help="Do not write to Zotero / Zoteroに書き込まない"
+    ),
+    delete_broken: bool = typer.Option(
+        False,
+        "--delete-broken",
+        help="Delete broken annotations before processing / 処理前に壊れ注釈を削除する",
+    ),
+    keep_broken: bool = typer.Option(
+        False,
+        "--keep-broken",
+        help="Do not delete broken annotations (override env) / 壊れ注釈を削除しない",
+    ),
+) -> None:
+    """Write base annotations without translation (翻訳なしで原文アノテーションを書き込む)."""
+    _run_annotations_command(
+        tag=tag,
+        item_keys=item_keys,
+        max_items=max_items,
+        read_only=read_only,
+        translate=False,
+        delete_broken=delete_broken,
+        keep_broken=keep_broken,
+    )
 
 
 
