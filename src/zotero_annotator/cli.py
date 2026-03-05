@@ -14,7 +14,11 @@ from rich.console import Console
 
 from zotero_annotator.clients.zotero import ZoteroClient
 from zotero_annotator.config import get_core_settings, get_translation_settings
-from zotero_annotator.pipeline import build_annotation_payload, run_no_translation
+from zotero_annotator.pipeline import (
+    build_annotation_payload,
+    run_no_translation,
+    run_translate_existing_notes,
+)
 from zotero_annotator.services.annotation_position import build_note_position
 from zotero_annotator.services.paragraph_extractor import extract_paragraphs_from_pdf_bytes
 from zotero_annotator.services.pdf_pages import get_pdf_page_sizes
@@ -278,7 +282,7 @@ def translate(
         False, "--read-only/--write", help="Do not write to Zotero / Zoteroに書き込まない"
     ),
 ) -> None:
-    """Translate command skeleton (翻訳コマンドの骨組み)."""
+    """Translate existing annotation note bodies in-place (既存注釈本文をin-place翻訳更新する)."""
     if max_items < 1:
         raise typer.BadParameter("--max-items must be >= 1")
 
@@ -288,56 +292,48 @@ def translate(
 
     try:
         settings = get_core_settings()
+        tsettings = get_translation_settings()
+        translator = build_translator()
+        source_lang = (tsettings.source_lang or "").strip()
+        target_lang = tsettings.target_lang
     except ValidationError as exc:
         fail("Invalid .env / environment variables", str(exc))
         return
+    except RuntimeError as exc:
+        fail("Translator provider error", str(exc))
+        return
 
-    zotero = ZoteroClient(
-        base_url=settings.zotero_base_url,
-        api_key=settings.z_api_key,
-        scope=settings.z_scope,
-        library_id=settings.z_id,
-    )
     try:
-        selected_items: list[dict] = []
-        if item_keys:
-            seen = set()
-            ordered_keys: list[str] = []
-            for key in item_keys:
-                if key and key not in seen:
-                    seen.add(key)
-                    ordered_keys.append(key)
-            for key in ordered_keys:
-                try:
-                    selected_items.append(zotero.get_item(key))
-                except httpx.HTTPStatusError as exc:
-                    status = exc.response.status_code if exc.response is not None else "unknown"
-                    fail("Zotero item lookup failed", f"item_key={key} status={status}")
-                except httpx.HTTPError as exc:
-                    fail("Zotero connection failed", f"item_key={key} detail={exc}")
-        else:
-            try:
-                for item in zotero.iter_items_by_tag(tag=settings.z_target_tag, limit_per_page=100):
-                    selected_items.append(item)
-                    if len(selected_items) >= max_items:
-                        break
-            except httpx.HTTPError as exc:
-                fail("Zotero connection failed", f"tag={settings.z_target_tag} detail={exc}")
-
-        console.print(
-            f"[cyan]translate skeleton[/cyan] mode={'read-only' if read_only else 'write'} "
-            f"selected_items={len(selected_items)}"
+        results = run_translate_existing_notes(
+            settings,
+            dry_run=read_only,
+            max_items=max_items,
+            translator=translator,
+            source_lang=source_lang,
+            target_lang=target_lang,
+            item_keys=item_keys,
         )
-        for count, item in enumerate(selected_items, start=1):
-            key = item.get("key") or ""
-            title = (item.get("data") or {}).get("title") or ""
+    except Exception as exc:
+        fail("Pipeline crashed", str(exc))
+        return
+
+    console.print(
+        f"[cyan]translate[/cyan] mode={'read-only' if read_only else 'write'} items={len(results)}"
+    )
+    for r in results:
+        if r.skipped_reason:
+            console.print(f"[yellow]SKIP[/yellow] {r.title} ({r.skipped_reason})")
+            continue
+        console.print(
+            f"[green]DONE[/green] {r.title} total={r.annotations_total} targeted={r.annotations_targeted} "
+            f"processed={r.annotations_processed} updated={r.annotations_updated}"
+        )
+        if read_only:
             console.print(
-                f"{count:>2}. [bold cyan]item-key[/bold cyan] : [cyan]{key}[/cyan]  "
-                f"[bold green]title[/bold green] : [green]{title}[/green]"
+                f"[cyan]READ-ONLY[/cyan] {r.title} planned_updates={r.annotations_processed} updated=0"
             )
-        console.print("[yellow]NOOP[/yellow] Translation updates are not implemented yet.")
-    finally:
-        zotero.close()
+        for w in (r.warnings or []):
+            console.print(f"[yellow]WARN[/yellow] {r.title} ({w})")
 
 
 

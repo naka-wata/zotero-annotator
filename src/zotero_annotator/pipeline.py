@@ -35,6 +35,237 @@ class ItemResult:
     warnings: List[str] = field(default_factory=list)
 
 
+@dataclass
+class TranslationItemResult:
+    item_key: str
+    title: str
+    pdf_key: Optional[str]
+
+    annotations_total: int
+    annotations_targeted: int
+    annotations_processed: int
+    annotations_updated: int
+
+    skipped_reason: Optional[str] = None
+    warnings: List[str] = field(default_factory=list)
+
+
+def run_translate_existing_notes(
+    settings: CoreSettings,
+    *,
+    dry_run: bool,
+    max_items: int,
+    translator: Translator,
+    source_lang: str,
+    target_lang: str,
+    override_tag: Optional[str] = None,
+    item_keys: Optional[Sequence[str]] = None,
+) -> List[TranslationItemResult]:
+    """
+    Translate existing Zotero annotation note bodies in-place.
+
+    - Fetch existing annotations from Zotero (既存注釈の取得)
+    - Use current note body as source text (annotationComment / note 本文を翻訳元にする)
+    - Update only the body field in place (本文のみ更新)
+    - Never create new annotations (新規注釈は作らない)
+    """
+    zotero = ZoteroClient(
+        base_url=settings.zotero_base_url,
+        api_key=settings.z_api_key,
+        scope=settings.z_scope,
+        library_id=settings.z_id,
+    )
+    results: List[TranslationItemResult] = []
+    try:
+        if item_keys:
+            seen: Set[str] = set()
+            ordered_keys = [k for k in item_keys if k and not (k in seen or seen.add(k))]
+            for index, item_key in enumerate(ordered_keys):
+                if index >= max_items:
+                    break
+                try:
+                    item = zotero.get_item(item_key)
+                except httpx.HTTPError as exc:
+                    results.append(
+                        TranslationItemResult(
+                            item_key=item_key,
+                            title=item_key,
+                            pdf_key=None,
+                            annotations_total=0,
+                            annotations_targeted=0,
+                            annotations_processed=0,
+                            annotations_updated=0,
+                            skipped_reason=f"item_lookup_failed item_key={item_key}: {exc}",
+                        )
+                    )
+                    continue
+                results.append(
+                    process_item_translate_existing_notes(
+                        settings,
+                        zotero=zotero,
+                        item=item,
+                        dry_run=dry_run,
+                        translator=translator,
+                        source_lang=source_lang,
+                        target_lang=target_lang,
+                    )
+                )
+        else:
+            tag = override_tag or settings.z_target_tag
+            for index, item in enumerate(zotero.iter_items_by_tag(tag=tag, limit_per_page=100)):
+                if index >= max_items:
+                    break
+                results.append(
+                    process_item_translate_existing_notes(
+                        settings,
+                        zotero=zotero,
+                        item=item,
+                        dry_run=dry_run,
+                        translator=translator,
+                        source_lang=source_lang,
+                        target_lang=target_lang,
+                    )
+                )
+    finally:
+        zotero.close()
+
+    return results
+
+
+def process_item_translate_existing_notes(
+    settings: CoreSettings,
+    *,
+    zotero: ZoteroClient,
+    item: Dict[str, Any],
+    dry_run: bool,
+    translator: Translator,
+    source_lang: str,
+    target_lang: str,
+) -> TranslationItemResult:
+    item_key = item.get("key") or ""
+    title = (item.get("data") or {}).get("title") or item_key
+    warnings: List[str] = []
+
+    try:
+        children = zotero.list_children(item_key)
+    except httpx.HTTPError as exc:
+        return TranslationItemResult(
+            item_key=item_key,
+            title=title,
+            pdf_key=None,
+            annotations_total=0,
+            annotations_targeted=0,
+            annotations_processed=0,
+            annotations_updated=0,
+            skipped_reason=f"children_fetch_failed item_key={item_key}: {exc}",
+        )
+
+    pdf = zotero.pick_pdf_attachment(children)
+    if not pdf:
+        return TranslationItemResult(
+            item_key=item_key,
+            title=title,
+            pdf_key=None,
+            annotations_total=0,
+            annotations_targeted=0,
+            annotations_processed=0,
+            annotations_updated=0,
+            skipped_reason=f"no_pdf_attachment item_key={item_key}",
+        )
+
+    pdf_key = pdf.get("key") or ""
+    try:
+        annotations = list(zotero.iter_annotations(parent_key=pdf_key, limit_per_page=100))
+    except httpx.HTTPError as exc:
+        return TranslationItemResult(
+            item_key=item_key,
+            title=title,
+            pdf_key=pdf_key,
+            annotations_total=0,
+            annotations_targeted=0,
+            annotations_processed=0,
+            annotations_updated=0,
+            skipped_reason=f"list_annotations_failed item_key={item_key} pdf_key={pdf_key}: {exc}",
+        )
+
+    targeted = 0
+    processed = 0
+    updated = 0
+
+    for ann in annotations:
+        ann_key = ann.get("key") or ""
+        version = ann.get("version")
+        data = dict(ann.get("data") or {})
+        tags = zotero.extract_tag_names(ann)
+        para_tags = [t for t in tags if isinstance(t, str) and t.startswith(settings.dedup_tag_prefix)]
+        if not para_tags:
+            continue
+        targeted += 1
+
+        body_field = _detect_annotation_body_field(data)
+        source_text = str(data.get(body_field) or "").strip()
+        if not source_text:
+            warnings.append(f"empty_source item_key={item_key} annotation_key={ann_key} field={body_field}")
+            continue
+
+        try:
+            translated_text = translator.translate(source_text, source_lang=source_lang, target_lang=target_lang).text
+        except TranslationError as exc:
+            return TranslationItemResult(
+                item_key=item_key,
+                title=title,
+                pdf_key=pdf_key,
+                annotations_total=len(annotations),
+                annotations_targeted=targeted,
+                annotations_processed=processed,
+                annotations_updated=updated,
+                skipped_reason=(
+                    f"translation_failed item_key={item_key} annotation_key={ann_key} "
+                    f"kind={exc.kind} status={exc.status_code}: {exc}"
+                ),
+                warnings=warnings,
+            )
+        processed += 1
+
+        if dry_run:
+            warnings.append(
+                f"read_only_no_update item_key={item_key} annotation_key={ann_key} field={body_field}"
+            )
+            continue
+
+        patch = dict(data)
+        patch.setdefault("key", ann_key)
+        patch.setdefault("itemType", "annotation")
+        patch[body_field] = translated_text
+
+        try:
+            zotero.update_item(item_key=ann_key, data=patch, version=version if isinstance(version, int) else None)
+            updated += 1
+        except httpx.HTTPError as exc:
+            return TranslationItemResult(
+                item_key=item_key,
+                title=title,
+                pdf_key=pdf_key,
+                annotations_total=len(annotations),
+                annotations_targeted=targeted,
+                annotations_processed=processed,
+                annotations_updated=updated,
+                skipped_reason=f"annotation_update_failed item_key={item_key} annotation_key={ann_key}: {exc}",
+                warnings=warnings,
+            )
+
+    return TranslationItemResult(
+        item_key=item_key,
+        title=title,
+        pdf_key=pdf_key,
+        annotations_total=len(annotations),
+        annotations_targeted=targeted,
+        annotations_processed=processed,
+        annotations_updated=updated,
+        warnings=warnings,
+    )
+
+
 def run_no_translation(
     settings: CoreSettings,
     *,
@@ -626,6 +857,15 @@ def _maybe_append_source_snippet(*, translated: str, source: str, enabled: bool,
     if not snippet:
         return translated
     return f"{translated}\n\nSRC: {snippet}"
+
+
+def _detect_annotation_body_field(data: Dict[str, Any]) -> str:
+    # Prefer annotationComment for annotation items; fall back to note body when needed.
+    if "annotationComment" in data:
+        return "annotationComment"
+    if "note" in data:
+        return "note"
+    return "annotationComment"
 
 
 def build_annotation_payload(
