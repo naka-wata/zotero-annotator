@@ -291,6 +291,18 @@ def process_item_translate_existing_notes(
     elif processed == 0:
         skipped_reason = f"stage=source no_valid_translation_targets item_key={item_key} pdf_key={pdf_key}"
 
+    if write_enabled and processed > 0:
+        current_tags = zotero.extract_tag_names(item)
+        next_tags = zotero.merge_tags(
+            current=current_tags,
+            add=[settings.z_done_tag],
+            remove=[settings.z_base_done_tag],
+        )
+        try:
+            zotero.update_item_tags(item_key=item_key, tags=next_tags)
+        except httpx.HTTPError as exc:
+            warnings.append(f"tag_update_failed: {exc}")
+
     return TranslationItemResult(
         item_key=item_key,
         title=title,
