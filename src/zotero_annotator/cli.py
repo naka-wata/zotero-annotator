@@ -74,11 +74,19 @@ def search(
         raise typer.BadParameter("--max-items must be >= 1")
 
     settings = get_core_settings()
-    specified_tags = set(tag or [])
-    if specified_tags:
-        tags_to_search = {settings.z_base_done_tag, *specified_tags}
+    tags_to_search: list[str] = []
+
+    def append_tag_once(value: str) -> None:
+        if value and value not in tags_to_search:
+            tags_to_search.append(value)
+
+    if tag:
+        append_tag_once(settings.z_base_done_tag)
+        for specified_tag in tag:
+            append_tag_once(specified_tag)
     else:
-        tags_to_search = {settings.z_target_tag, settings.z_base_done_tag}
+        append_tag_once(settings.z_target_tag)
+        append_tag_once(settings.z_base_done_tag)
 
     zotero = ZoteroClient(
         base_url=settings.zotero_base_url,
@@ -87,25 +95,36 @@ def search(
         library_id=settings.z_id,
     )
     try:
-        count = 0
+        matched_tags_by_item_key: dict[str, list[str]] = {}
+        items_by_key: dict[str, dict] = {}
         for target_tag in tags_to_search:
             for item in zotero.iter_items_by_tag(tag=target_tag, limit_per_page=100):
-                count += 1
-                if count > max_items:
-                    break
                 key = item.get("key") or ""
-                title = (item.get("data") or {}).get("title") or ""
-                tags = zotero.extract_tag_names(item)
-                tags_text = ", ".join(tags) if tags else "-"
-                console.print(
-                    f"{count:>2}. [bold cyan]item-key[/bold cyan] : [cyan]{key}[/cyan]  "
-                    f"[bold green]title[/bold green] : [green]{title}[/green]  "
-                    f"[bold yellow]tags[/bold yellow] : [yellow]{tags_text}[/yellow]"
-                )
-            if count > max_items:
+                if not key:
+                    continue
+                matched_tags = matched_tags_by_item_key.setdefault(key, [])
+                if target_tag not in matched_tags:
+                    matched_tags.append(target_tag)
+                if key not in items_by_key:
+                    items_by_key[key] = item
+                if len(items_by_key) >= max_items:
+                    break
+            if len(items_by_key) >= max_items:
                 break
-        tags_text = " OR ".join(sorted(tags_to_search))
-        console.print(f"[cyan]tags={tags_text} displayed={min(count, max_items)}[/cyan]")
+
+        for count, (key, item) in enumerate(items_by_key.items(), start=1):
+            title = (item.get("data") or {}).get("title") or ""
+            tags = zotero.extract_tag_names(item)
+            tags_text = ", ".join(tags) if tags else "-"
+            matched_tags_text = ", ".join(matched_tags_by_item_key.get(key, [])) or "-"
+            console.print(
+                f"{count:>2}. [bold magenta]matched_tags[/bold magenta] : [magenta]{matched_tags_text}[/magenta]  "
+                f"[bold cyan]item-key[/bold cyan] : [cyan]{key}[/cyan]  "
+                f"[bold green]title[/bold green] : [green]{title}[/green]  "
+                f"[bold yellow]tags[/bold yellow] : [yellow]{tags_text}[/yellow]"
+            )
+        tags_text = " OR ".join(tags_to_search)
+        console.print(f"[cyan]tags={tags_text} displayed={len(items_by_key)}[/cyan]")
     finally:
         zotero.close()
 
