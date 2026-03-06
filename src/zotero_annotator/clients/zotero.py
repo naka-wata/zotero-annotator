@@ -117,15 +117,16 @@ class ZoteroClient:
     def list_annotations(self, parent_key: str, *, limit: int = 100, start: int = 0) -> List[Dict[str, Any]]:
         params = {
             "include": "data",
-            "itemType": "annotation",
-            "parentItem": parent_key,
             "format": "json",
             "limit": limit,
             "start": start,
         }
-        resp = self._get(f"{self._library_path()}/items", params=params)
+        # Use children endpoint to guarantee parent scoping for this attachment.
+        # (parentItem クエリ依存を避け、親添付配下の子アイテムのみ取得する)
+        resp = self._get(f"{self._library_path()}/items/{parent_key}/children", params=params)
         resp.raise_for_status()
-        return resp.json()
+        items = resp.json()
+        return [i for i in items if (i.get("data") or {}).get("itemType") == "annotation"]
 
     # Iterate over all annotations with pagination (注釈をページングしながら全件取得する)
     def iter_annotations(self, parent_key: str, limit_per_page: int = 100) -> Iterable[Dict[str, Any]]:

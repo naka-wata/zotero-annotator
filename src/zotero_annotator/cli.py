@@ -11,10 +11,15 @@ import httpx
 import typer
 from pydantic import ValidationError
 from rich.console import Console
+from rich.table import Table
 
 from zotero_annotator.clients.zotero import ZoteroClient
 from zotero_annotator.config import get_core_settings, get_translation_settings
-from zotero_annotator.pipeline import build_annotation_payload, run_no_translation
+from zotero_annotator.pipeline import (
+    build_annotation_payload,
+    run_no_translation,
+    run_translate_existing_notes,
+)
 from zotero_annotator.services.annotation_position import build_note_position
 from zotero_annotator.services.paragraph_extractor import extract_paragraphs_from_pdf_bytes
 from zotero_annotator.services.pdf_pages import get_pdf_page_sizes
@@ -34,6 +39,7 @@ app.add_typer(dev_app, name="dev")
 console = Console()
 
 _SOURCE_SNIPPET_CHARS = 10
+_SEARCH_TABLE_TRUNCATE_CHARS = 80
 
 
 def _build_source_snippet(text: str, *, chars: int) -> str:
@@ -55,10 +61,29 @@ def _maybe_append_source_snippet(*, translated: str, source: str, enabled: bool,
     return f"{translated}\n\nSRC: {snippet}"
 
 
+def _truncate_for_table(value: str, *, max_chars: int) -> str:
+    text = " ".join((value or "").split()).strip()
+    if not text:
+        return "-"
+    if len(text) <= max_chars:
+        return text
+    return f"{text[: max_chars - 1].rstrip()}…"
+
+
+def _search_sort_key(item_key: str, matched_tags_by_item_key: dict[str, list[str]], *, base_done_tag: str) -> tuple[int, str]:
+    matched_tags = matched_tags_by_item_key.get(item_key, [])
+    has_base_done = base_done_tag in matched_tags
+    return (0 if has_base_done else 1, item_key)
+
+
 # Search command to list target papers quickly (対象論文を確認する検索コマンド)
 @app.command()
 def search(
-    tag: Optional[str] = typer.Option(None, "--tag", help="Target tag override / 対象タグを上書き"),
+    tag: Optional[List[str]] = typer.Option(
+        None,
+        "--tag",
+        help="Target tag to OR with base tag (repeatable) / 対象タグをOR追加（複数指定可）",
+    ),
     max_items: int = typer.Option(20, "--max-items", help="Max items to display / 表示する最大件数"),
 ) -> None:
     """List items tagged in Zotero (タグ付き論文の一覧を表示する)."""
@@ -66,7 +91,19 @@ def search(
         raise typer.BadParameter("--max-items must be >= 1")
 
     settings = get_core_settings()
-    target_tag = tag or settings.z_target_tag
+    tags_to_search: list[str] = []
+
+    def append_tag_once(value: str) -> None:
+        if value and value not in tags_to_search:
+            tags_to_search.append(value)
+
+    if tag:
+        append_tag_once(settings.z_base_done_tag)
+        for specified_tag in tag:
+            append_tag_once(specified_tag)
+    else:
+        append_tag_once(settings.z_target_tag)
+        append_tag_once(settings.z_base_done_tag)
 
     zotero = ZoteroClient(
         base_url=settings.zotero_base_url,
@@ -75,21 +112,55 @@ def search(
         library_id=settings.z_id,
     )
     try:
-        count = 0
-        for item in zotero.iter_items_by_tag(tag=target_tag, limit_per_page=100):
-            count += 1
-            if count > max_items:
+        matched_tags_by_item_key: dict[str, list[str]] = {}
+        items_by_key: dict[str, dict] = {}
+        for target_tag in tags_to_search:
+            for item in zotero.iter_items_by_tag(tag=target_tag, limit_per_page=100):
+                key = item.get("key") or ""
+                if not key:
+                    continue
+                matched_tags = matched_tags_by_item_key.setdefault(key, [])
+                if target_tag not in matched_tags:
+                    matched_tags.append(target_tag)
+                if key not in items_by_key:
+                    items_by_key[key] = item
+                if len(items_by_key) >= max_items:
+                    break
+            if len(items_by_key) >= max_items:
                 break
-            key = item.get("key") or ""
+
+        table = Table(show_header=True, header_style="bold")
+        table.add_column("#", justify="right", style="dim", no_wrap=True)
+        table.add_column("matched_tags", style="magenta")
+        table.add_column("item-key", style="cyan", no_wrap=True)
+        table.add_column("title", style="green")
+        table.add_column("tags", style="yellow")
+
+        sorted_items = sorted(
+            items_by_key.items(),
+            key=lambda pair: _search_sort_key(
+                pair[0],
+                matched_tags_by_item_key,
+                base_done_tag=settings.z_base_done_tag,
+            ),
+        )
+
+        for count, (key, item) in enumerate(sorted_items, start=1):
             title = (item.get("data") or {}).get("title") or ""
             tags = zotero.extract_tag_names(item)
             tags_text = ", ".join(tags) if tags else "-"
-            console.print(
-                f"{count:>2}. [bold cyan]item-key[/bold cyan] : [cyan]{key}[/cyan]  "
-                f"[bold green]title[/bold green] : [green]{title}[/green]  "
-                f"[bold yellow]tags[/bold yellow] : [yellow]{tags_text}[/yellow]"
+            matched_tags_text = ", ".join(matched_tags_by_item_key.get(key, [])) or "-"
+            table.add_row(
+                str(count),
+                matched_tags_text,
+                key,
+                _truncate_for_table(title, max_chars=_SEARCH_TABLE_TRUNCATE_CHARS),
+                _truncate_for_table(tags_text, max_chars=_SEARCH_TABLE_TRUNCATE_CHARS),
             )
-        console.print(f"[cyan]tag={target_tag} displayed={min(count, max_items)}[/cyan]")
+
+        console.print(table)
+        tags_text = " OR ".join(tags_to_search)
+        console.print(f"[cyan]tags={tags_text} displayed={len(items_by_key)}[/cyan]")
     finally:
         zotero.close()
 
@@ -264,6 +335,74 @@ def base(
         delete_broken=delete_broken,
         keep_broken=keep_broken,
     )
+
+
+@app.command()
+def translate(
+    item_keys: Optional[List[str]] = typer.Option(
+        None,
+        "--item-key",
+        help="Target item key (repeatable) / 対象item-key（複数指定可）",
+    ),
+    max_items: int = typer.Option(10, "--max-items", help="Max papers per run / 1回の最大論文数"),
+    read_only: bool = typer.Option(
+        False, "--read-only/--write", help="Do not write to Zotero / Zoteroに書き込まない"
+    ),
+) -> None:
+    """Translate existing annotation note bodies in-place (既存注釈本文をin-place翻訳更新する)."""
+    if max_items < 1:
+        raise typer.BadParameter("--max-items must be >= 1")
+
+    def fail(stage: str, detail: str) -> None:
+        console.print(f"[red]ERROR[/red] {stage}: {detail}")
+        raise typer.Exit(code=1)
+
+    try:
+        settings = get_core_settings()
+        tsettings = get_translation_settings()
+        translator = build_translator()
+        source_lang = (tsettings.source_lang or "").strip()
+        target_lang = tsettings.target_lang
+    except ValidationError as exc:
+        fail("Invalid .env / environment variables", str(exc))
+        return
+    except RuntimeError as exc:
+        fail("Translator provider error", str(exc))
+        return
+
+    try:
+        override_tag = None if item_keys else settings.z_base_done_tag
+        results = run_translate_existing_notes(
+            settings,
+            dry_run=read_only,
+            max_items=max_items,
+            translator=translator,
+            source_lang=source_lang,
+            target_lang=target_lang,
+            override_tag=override_tag,
+            item_keys=item_keys,
+        )
+    except Exception as exc:
+        fail("Pipeline crashed", str(exc))
+        return
+
+    console.print(
+        f"[cyan]translate[/cyan] mode={'read-only' if read_only else 'write'} items={len(results)}"
+    )
+    for r in results:
+        if r.skipped_reason:
+            console.print(f"[yellow]SKIP[/yellow] {r.title} ({r.skipped_reason})")
+            continue
+        console.print(
+            f"[green]DONE[/green] {r.title} total={r.annotations_total} targeted={r.annotations_targeted} "
+            f"processed={r.annotations_processed} updated={r.annotations_updated}"
+        )
+        if read_only:
+            console.print(
+                f"[cyan]READ-ONLY[/cyan] {r.title} planned_updates={r.annotations_processed} updated=0"
+            )
+        for w in (r.warnings or []):
+            console.print(f"[yellow]WARN[/yellow] {r.title} ({w})")
 
 
 

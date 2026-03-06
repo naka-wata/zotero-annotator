@@ -17,6 +17,19 @@ source .venv/bin/activate
 - `base`: 翻訳なしで原文注釈を作成する正規コマンド
 - `translate`: 既存注釈を翻訳するコマンド
 
+タグ遷移の考え方:
+
+- `run` は常に翻訳ありで完結するコマンドです。`base` / `translate` の2段階運用とは役割が違います。
+- `base` の `--write` 実行で完了判定になった item は、`to-translate` が外れて `base-done` が付きます。
+- `base` の dry-run ではタグは変わりません。タグ遷移は write 時かつ完了判定時のみ発生します。
+- `translate` の `--write` 実行が成功した item は、`base-done` が外れて `translated` が付きます。
+- `translate` の dry-run や失敗時はタグは変わりません。タグ遷移は write 時かつ成功時のみ発生します。
+
+annotation-level タグの既定値:
+
+- `ANN_PENDING_TRANSLATION_TAG=za:translate`: base で作成された未翻訳 annotation を示します。
+- `ANN_TRANSLATED_TAG=za:translated`: translate 済み annotation を示します。
+
 ## トップレベルコマンド
 
 - `zotero-annotator search`
@@ -31,12 +44,19 @@ source .venv/bin/activate
 
 タグで Zotero アイテムを一覧表示します（読み取りのみ）。
 
-- `--tag TEXT`: 対象タグ上書き（未指定時は `Z_TARGET_TAG`）
+- `search` は `Z_TARGET_TAG`（既定 `to-translate`）と `Z_BASE_DONE_TAG`（既定 `base-done`）を参照します。
+- 対象タグ集合のルール:
+  - `--tag` 未指定: `Z_TARGET_TAG OR Z_BASE_DONE_TAG`
+  - `--tag` 指定: `Z_BASE_DONE_TAG OR (--tag で指定した全て)`
+- `--tag TEXT`: 対象タグを追加指定（複数指定可）
 - `--max-items INTEGER`: 表示上限（既定 `20`）
 
 例:
 
 ```bash
+zotero-annotator search
+zotero-annotator search --tag A
+zotero-annotator search --tag A --tag B
 zotero-annotator search --tag to-translate --max-items 5
 ```
 
@@ -57,6 +77,7 @@ zotero-annotator search --tag to-translate --max-items 5
 
 - `--tag` と `--item-key` は同時指定不可
 - 翻訳なし運用は `base` を使用
+- `run` は常に翻訳ありで、`to-translate -> base-done -> translated` の段階運用とは別の役割です
 - `TRANSLATOR_PROVIDER=openai` は未実装
 - 壊れ注釈 = `annotationSortIndex` / `annotationPageLabel` / `annotationPosition` の欠落注釈
 
@@ -85,17 +106,64 @@ zotero-annotator run --write --item-key ABCD1234
 zotero-annotator base --write --item-key ABCD1234
 ```
 
+タグ遷移:
+
+- `--write` かつ完了判定時のみ、`to-translate` を外して `base-done` を付けます。
+- `--read-only` ではタグは変わりません。
+- 新規 annotation には `para:<hash>` と `ANN_PENDING_TRANSLATION_TAG`（既定 `za:translate`）が付きます。
+
 ---
 
 ## `zotero-annotator translate`
 
-既存注釈を翻訳します。
+既存注釈の本文を in-place で翻訳更新します。
+
+- `--item-key TEXT`（複数可）: item 指定実行
+- `--max-items INTEGER`: 処理件数上限（既定 `10`）
+- `--read-only/--write`: 書き込み有無（既定 `--write`）
+
+仕様:
+
+- `translate` には `--tag` はありません（対象分岐を増やさないため）。
+- `--item-key` 未指定時は `Z_BASE_DONE_TAG`（既定 `base-done`）付き item を一括処理します。
+- **新規注釈は作成せず、既存注釈の `annotationComment`（または `note` 本文）だけ更新します。**
+- 翻訳元は PyMuPDF 再抽出テキストではなく、Zotero 上の既存ノート本文（手修正済み）を使います。
+- 翻訳対象は `ANN_PENDING_TRANSLATION_TAG`（既定 `za:translate`）が付いた annotation のみです。
+- `ANN_TRANSLATED_TAG`（既定 `za:translated`）が付いた annotation は、pending が残っていても再翻訳しません。
+- `--write` かつ成功時のみ、`base-done` を外して `translated` を付けます。
+- annotation 本文更新が成功した場合のみ、同じ更新で `ANN_PENDING_TRANSLATION_TAG` を外して `ANN_TRANSLATED_TAG` を付けます。
+- `--read-only` や失敗時はタグは変わりません。
 
 例:
 
 ```bash
+zotero-annotator base --write --item-key ABCD1234
 zotero-annotator translate --write --item-key ABCD1234
+zotero-annotator translate --write
 ```
+
+推奨フロー（base -> edit -> translate）:
+
+1. `zotero-annotator base --write ...` で原文注釈を作成
+2. Zotero で必要な注釈だけ手修正
+3. `zotero-annotator translate --write ...` で本文を翻訳更新
+
+運用上のタグ遷移:
+
+1. 開始時: `to-translate`
+2. `base --write` が完了判定: `base-done`
+3. `translate --write` が成功: `translated`
+
+annotation-level の状態遷移:
+
+1. `base --write` 後: `pending` (`ANN_PENDING_TRANSLATION_TAG`)
+2. `translate --write` 成功後: `translated` (`ANN_TRANSLATED_TAG`)
+
+単一ノートを再翻訳したい場合:
+
+1. Zotero で対象 annotation の `ANN_TRANSLATED_TAG`（既定 `za:translated`）を外す
+2. 同じ annotation に `ANN_PENDING_TRANSLATION_TAG`（既定 `za:translate`）を付ける
+3. `zotero-annotator translate --write --item-key ABCD1234` を実行する
 
 ---
 

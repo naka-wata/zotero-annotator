@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Literal, Optional, Sequence, Set
 
@@ -33,6 +34,314 @@ class ItemResult:
 
     skipped_reason: Optional[str] = None
     warnings: List[str] = field(default_factory=list)
+
+
+@dataclass
+class TranslationItemResult:
+    item_key: str
+    title: str
+    pdf_key: Optional[str]
+
+    annotations_total: int
+    annotations_targeted: int
+    annotations_processed: int
+    annotations_updated: int
+
+    skipped_reason: Optional[str] = None
+    warnings: List[str] = field(default_factory=list)
+
+
+def run_translate_existing_notes(
+    settings: CoreSettings,
+    *,
+    dry_run: bool,
+    max_items: int,
+    translator: Translator,
+    source_lang: str,
+    target_lang: str,
+    override_tag: Optional[str] = None,
+    item_keys: Optional[Sequence[str]] = None,
+) -> List[TranslationItemResult]:
+    """
+    Translate existing Zotero annotation note bodies in-place.
+
+    - Fetch existing annotations from Zotero (既存注釈の取得)
+    - Use current note body as source text (annotationComment / note 本文を翻訳元にする)
+    - Update only the body field in place (本文のみ更新)
+    - Never create new annotations (新規注釈は作らない)
+    """
+    zotero = ZoteroClient(
+        base_url=settings.zotero_base_url,
+        api_key=settings.z_api_key,
+        scope=settings.z_scope,
+        library_id=settings.z_id,
+    )
+    results: List[TranslationItemResult] = []
+    try:
+        if item_keys:
+            seen: Set[str] = set()
+            ordered_keys = [k for k in item_keys if k and not (k in seen or seen.add(k))]
+            for index, item_key in enumerate(ordered_keys):
+                if index >= max_items:
+                    break
+                try:
+                    item = zotero.get_item(item_key)
+                except httpx.HTTPError as exc:
+                    results.append(
+                        TranslationItemResult(
+                            item_key=item_key,
+                            title=item_key,
+                            pdf_key=None,
+                            annotations_total=0,
+                            annotations_targeted=0,
+                            annotations_processed=0,
+                            annotations_updated=0,
+                            skipped_reason=f"stage=fetch_item item_lookup_failed item_key={item_key}: {exc}",
+                        )
+                    )
+                    continue
+                results.append(
+                    process_item_translate_existing_notes(
+                        settings,
+                        zotero=zotero,
+                        item=item,
+                        dry_run=dry_run,
+                        translator=translator,
+                        source_lang=source_lang,
+                        target_lang=target_lang,
+                    )
+                )
+        else:
+            tag = override_tag or settings.z_base_done_tag
+            for index, item in enumerate(zotero.iter_items_by_tag(tag=tag, limit_per_page=100)):
+                if index >= max_items:
+                    break
+                results.append(
+                    process_item_translate_existing_notes(
+                        settings,
+                        zotero=zotero,
+                        item=item,
+                        dry_run=dry_run,
+                        translator=translator,
+                        source_lang=source_lang,
+                        target_lang=target_lang,
+                    )
+                )
+    finally:
+        zotero.close()
+
+    return results
+
+
+def process_item_translate_existing_notes(
+    settings: CoreSettings,
+    *,
+    zotero: ZoteroClient,
+    item: Dict[str, Any],
+    dry_run: bool,
+    translator: Translator,
+    source_lang: str,
+    target_lang: str,
+) -> TranslationItemResult:
+    item_key = item.get("key") or ""
+    title = (item.get("data") or {}).get("title") or item_key
+    warnings: List[str] = []
+
+    try:
+        children = zotero.list_children(item_key)
+    except httpx.HTTPError as exc:
+        return TranslationItemResult(
+            item_key=item_key,
+            title=title,
+            pdf_key=None,
+            annotations_total=0,
+            annotations_targeted=0,
+            annotations_processed=0,
+            annotations_updated=0,
+            skipped_reason=f"stage=fetch_children children_fetch_failed item_key={item_key}: {exc}",
+        )
+
+    pdf = zotero.pick_pdf_attachment(children)
+    if not pdf:
+        return TranslationItemResult(
+            item_key=item_key,
+            title=title,
+            pdf_key=None,
+            annotations_total=0,
+            annotations_targeted=0,
+            annotations_processed=0,
+            annotations_updated=0,
+            skipped_reason=f"stage=fetch_pdf no_pdf_attachment item_key={item_key}",
+        )
+
+    pdf_key = pdf.get("key") or ""
+    try:
+        annotations = list(zotero.iter_annotations(parent_key=pdf_key, limit_per_page=100))
+    except httpx.HTTPError as exc:
+        return TranslationItemResult(
+            item_key=item_key,
+            title=title,
+            pdf_key=pdf_key,
+            annotations_total=0,
+            annotations_targeted=0,
+            annotations_processed=0,
+            annotations_updated=0,
+            skipped_reason=f"stage=fetch_annotations list_annotations_failed item_key={item_key} pdf_key={pdf_key}: {exc}",
+        )
+
+    targeted = 0
+    processed = 0
+    updated = 0
+    write_enabled = not dry_run
+    skipped_non_pending = 0
+    skipped_already_translated = 0
+    targeted_missing_para_tag = 0
+    targeted_invalid_para_tag = 0
+    targeted_multiple_para_tags = 0
+
+    for ann in annotations:
+        ann_key = ann.get("key") or ""
+        version = ann.get("version")
+        data = dict(ann.get("data") or {})
+        tags = zotero.extract_tag_names(ann)
+        if settings.ann_translated_tag in tags:
+            skipped_already_translated += 1
+            continue
+        if settings.ann_pending_translation_tag not in tags:
+            skipped_non_pending += 1
+            continue
+
+        para_tags, invalid_para_tags = _split_para_tags(
+            tags=tags,
+            dedup_prefix=settings.dedup_tag_prefix,
+        )
+        targeted += 1
+        if invalid_para_tags:
+            targeted_invalid_para_tag += 1
+        if not para_tags:
+            targeted_missing_para_tag += 1
+        if len(para_tags) > 1:
+            targeted_multiple_para_tags += 1
+
+        body_field = _detect_annotation_body_field(data)
+        source_text = str(data.get(body_field) or "").strip()
+        if not source_text:
+            warnings.append(
+                f"stage=source empty_source item_key={item_key} annotation_key={ann_key} field={body_field}"
+            )
+            continue
+
+        try:
+            translated_text = translator.translate(source_text, source_lang=source_lang, target_lang=target_lang).text
+        except TranslationError as exc:
+            return TranslationItemResult(
+                item_key=item_key,
+                title=title,
+                pdf_key=pdf_key,
+                annotations_total=len(annotations),
+                annotations_targeted=targeted,
+                annotations_processed=processed,
+                annotations_updated=updated,
+                skipped_reason=(
+                    f"stage=translate translation_failed item_key={item_key} annotation_key={ann_key} "
+                    f"kind={exc.kind} status={exc.status_code}: {exc}"
+                ),
+                warnings=warnings,
+            )
+        except Exception as exc:
+            return TranslationItemResult(
+                item_key=item_key,
+                title=title,
+                pdf_key=pdf_key,
+                annotations_total=len(annotations),
+                annotations_targeted=targeted,
+                annotations_processed=processed,
+                annotations_updated=updated,
+                skipped_reason=(
+                    f"stage=translate translation_unexpected_error item_key={item_key} annotation_key={ann_key}: {exc}"
+                ),
+                warnings=warnings,
+            )
+        processed += 1
+
+        updated_now, warning_message, error_message = _apply_translated_annotation_update(
+            zotero=zotero,
+            write_enabled=write_enabled,
+            item_key=item_key,
+            annotation_key=ann_key,
+            body_field=body_field,
+            annotation_data=data,
+            version=version,
+            translated_text=translated_text,
+            pending_tag=settings.ann_pending_translation_tag,
+            translated_tag=settings.ann_translated_tag,
+        )
+        if warning_message:
+            warnings.append(warning_message)
+        if error_message:
+            return TranslationItemResult(
+                item_key=item_key,
+                title=title,
+                pdf_key=pdf_key,
+                annotations_total=len(annotations),
+                annotations_targeted=targeted,
+                annotations_processed=processed,
+                annotations_updated=updated,
+                skipped_reason=error_message,
+                warnings=warnings,
+            )
+        updated += updated_now
+
+    skipped_reason = None
+    if targeted == 0:
+        skipped_reason = f"stage=match no_pending_tagged_annotations item_key={item_key} pdf_key={pdf_key}"
+    elif processed == 0:
+        skipped_reason = f"stage=source no_valid_translation_targets item_key={item_key} pdf_key={pdf_key}"
+
+    if skipped_already_translated:
+        warnings.append(
+            f"stage=match skipped_already_translated count={skipped_already_translated}"
+        )
+    if skipped_non_pending:
+        warnings.append(
+            f"stage=match skipped_without_pending_tag count={skipped_non_pending}"
+        )
+    if targeted_missing_para_tag:
+        warnings.append(
+            f"stage=match targeted_missing_para_hash_tag count={targeted_missing_para_tag}"
+        )
+    if targeted_invalid_para_tag:
+        warnings.append(
+            f"stage=match targeted_invalid_para_tags count={targeted_invalid_para_tag}"
+        )
+    if targeted_multiple_para_tags:
+        warnings.append(
+            f"stage=match targeted_multiple_para_tags count={targeted_multiple_para_tags}"
+        )
+
+    if write_enabled and processed > 0:
+        current_tags = zotero.extract_tag_names(item)
+        next_tags = zotero.merge_tags(
+            current=current_tags,
+            add=[settings.z_done_tag],
+            remove=[settings.z_base_done_tag],
+        )
+        try:
+            zotero.update_item_tags(item_key=item_key, tags=next_tags)
+        except httpx.HTTPError as exc:
+            warnings.append(f"tag_update_failed: {exc}")
+
+    return TranslationItemResult(
+        item_key=item_key,
+        title=title,
+        pdf_key=pdf_key,
+        annotations_total=len(annotations),
+        annotations_targeted=targeted,
+        annotations_processed=processed,
+        annotations_updated=updated,
+        skipped_reason=skipped_reason,
+        warnings=warnings,
+    )
 
 
 def run_no_translation(
@@ -332,6 +641,7 @@ def process_item_no_translation(
                 comment_text=comment_text,
                 pdf_key=pdf_key,
                 dedup_tags=dedup_tags,
+                extra_tags=[settings.ann_pending_translation_tag],
                 annotation_mode=annotation_mode,
                 page_sizes=page_sizes,
             )
@@ -359,19 +669,18 @@ def process_item_no_translation(
             )
 
     # Auto finalize tags only when all paragraphs are complete (全段落が完了した時だけタグを更新)
-    # If translation is disabled, do not change item tags at all.
-    # (翻訳なしモードではアイテムタグを変更しない)
-    if not dry_run and translator is not None:
+    if not dry_run:
         # If we intentionally limited processing, do not finalize (一部だけ処理するモードでは完了扱いにしない)
         if max_paragraphs >= len(paragraphs):
             required = {f"{settings.dedup_tag_prefix}{h}" for p in paragraphs for h in (p.dedup_hashes or [p.hash])}
             available = set(existing_tags) | set(planned_dedup_tags)
             all_done = required.issubset(available)
             if all_done:
+                finalize_add_tag = settings.z_done_tag if translator is not None else settings.z_base_done_tag
                 current = zotero.extract_tag_names(item)
                 next_tags = zotero.merge_tags(
                     current=current,
-                    add=[settings.z_done_tag],
+                    add=[finalize_add_tag],
                     remove=[settings.z_remove_tag],
                 )
                 try:
@@ -628,16 +937,105 @@ def _maybe_append_source_snippet(*, translated: str, source: str, enabled: bool,
     return f"{translated}\n\nSRC: {snippet}"
 
 
+def _detect_annotation_body_field(data: Dict[str, Any]) -> str:
+    # Prefer annotationComment for annotation items; fall back to note body when needed.
+    if "annotationComment" in data:
+        return "annotationComment"
+    if "note" in data:
+        return "note"
+    return "annotationComment"
+
+
+def _apply_translated_annotation_update(
+    *,
+    zotero: ZoteroClient,
+    write_enabled: bool,
+    item_key: str,
+    annotation_key: str,
+    body_field: str,
+    annotation_data: Dict[str, Any],
+    version: Any,
+    translated_text: str,
+    pending_tag: str,
+    translated_tag: str,
+) -> tuple[int, Optional[str], Optional[str]]:
+    if not write_enabled:
+        return (
+            0,
+            f"stage=update read_only_no_update item_key={item_key} annotation_key={annotation_key} field={body_field}",
+            None,
+        )
+
+    patch = dict(annotation_data)
+    patch.setdefault("key", annotation_key)
+    patch.setdefault("itemType", "annotation")
+    patch[body_field] = translated_text
+    current_tags = [
+        t.get("tag")
+        for t in (annotation_data.get("tags") or [])
+        if isinstance(t, dict) and isinstance(t.get("tag"), str) and t.get("tag").strip()
+    ]
+    next_tags = zotero.merge_tags(
+        current=current_tags,
+        add=[translated_tag],
+        remove=[pending_tag],
+    )
+    patch["tags"] = [{"tag": t} for t in next_tags]
+
+    try:
+        zotero.update_item(
+            item_key=annotation_key,
+            data=patch,
+            version=version if isinstance(version, int) else None,
+        )
+        return 1, None, None
+    except httpx.HTTPError as exc:
+        return (
+            0,
+            None,
+            f"stage=update annotation_update_failed item_key={item_key} annotation_key={annotation_key}: {exc}",
+        )
+    except Exception as exc:
+        return (
+            0,
+            None,
+            f"stage=update annotation_update_unexpected_error item_key={item_key} annotation_key={annotation_key}: {exc}",
+        )
+
+
+_PARA_HASH_RE = re.compile(r"^[0-9a-f]{40}$")
+
+
+def _split_para_tags(*, tags: List[str], dedup_prefix: str) -> tuple[List[str], List[str]]:
+    valid: List[str] = []
+    invalid: List[str] = []
+    for tag in tags:
+        if not isinstance(tag, str) or not tag.startswith(dedup_prefix):
+            continue
+        hash_part = tag[len(dedup_prefix) :].strip()
+        if _PARA_HASH_RE.fullmatch(hash_part):
+            valid.append(tag)
+        else:
+            invalid.append(tag)
+    return valid, invalid
+
+
 def build_annotation_payload(
     *,
     paragraph: Paragraph,
     comment_text: str,
     pdf_key: str,
     dedup_tags: List[str],
+    extra_tags: Optional[Sequence[str]] = None,
     annotation_mode: AnnotationMode,
     page_sizes: Dict[int, tuple[float, float]] | None = None,
 ) -> Dict[str, Any]:
     # Build Zotero annotation payload (Zotero注釈ペイロード生成)
+    tag_names = [
+        tag
+        for tag in [*dedup_tags, *(extra_tags or ())]
+        if isinstance(tag, str) and tag.strip()
+    ]
     if annotation_mode == "note":
         note_pos = build_note_position(paragraph, page_sizes=page_sizes)
         return {
@@ -648,7 +1046,7 @@ def build_annotation_payload(
             "annotationPosition": json.dumps(note_pos.annotation_position),
             "annotationPageLabel": str(note_pos.page_index + 1),
             "annotationSortIndex": note_pos.annotation_sort_index,
-            "tags": [{"tag": t} for t in dedup_tags] + [{"tag": "pymupdf-auto"}],
+            "tags": [{"tag": t} for t in tag_names],
         }
 
     # highlight: small fixed rectangle, but still requires pageLabel/sortIndex in Zotero 7.
@@ -663,5 +1061,5 @@ def build_annotation_payload(
         "annotationPosition": json.dumps(annotation_position),
         "annotationPageLabel": str(note_pos.page_index + 1),
         "annotationSortIndex": note_pos.annotation_sort_index,
-        "tags": [{"tag": t} for t in dedup_tags],
+        "tags": [{"tag": t} for t in tag_names],
     }
