@@ -62,7 +62,11 @@ def _maybe_append_source_snippet(*, translated: str, source: str, enabled: bool,
 # Search command to list target papers quickly (対象論文を確認する検索コマンド)
 @app.command()
 def search(
-    tag: Optional[str] = typer.Option(None, "--tag", help="Target tag override / 対象タグを上書き"),
+    tag: Optional[List[str]] = typer.Option(
+        None,
+        "--tag",
+        help="Target tag to OR with base tag (repeatable) / 対象タグをOR追加（複数指定可）",
+    ),
     max_items: int = typer.Option(20, "--max-items", help="Max items to display / 表示する最大件数"),
 ) -> None:
     """List items tagged in Zotero (タグ付き論文の一覧を表示する)."""
@@ -70,7 +74,11 @@ def search(
         raise typer.BadParameter("--max-items must be >= 1")
 
     settings = get_core_settings()
-    target_tag = tag or settings.z_target_tag
+    specified_tags = set(tag or [])
+    if specified_tags:
+        tags_to_search = {settings.z_base_done_tag, *specified_tags}
+    else:
+        tags_to_search = {settings.z_target_tag, settings.z_base_done_tag}
 
     zotero = ZoteroClient(
         base_url=settings.zotero_base_url,
@@ -80,20 +88,24 @@ def search(
     )
     try:
         count = 0
-        for item in zotero.iter_items_by_tag(tag=target_tag, limit_per_page=100):
-            count += 1
+        for target_tag in tags_to_search:
+            for item in zotero.iter_items_by_tag(tag=target_tag, limit_per_page=100):
+                count += 1
+                if count > max_items:
+                    break
+                key = item.get("key") or ""
+                title = (item.get("data") or {}).get("title") or ""
+                tags = zotero.extract_tag_names(item)
+                tags_text = ", ".join(tags) if tags else "-"
+                console.print(
+                    f"{count:>2}. [bold cyan]item-key[/bold cyan] : [cyan]{key}[/cyan]  "
+                    f"[bold green]title[/bold green] : [green]{title}[/green]  "
+                    f"[bold yellow]tags[/bold yellow] : [yellow]{tags_text}[/yellow]"
+                )
             if count > max_items:
                 break
-            key = item.get("key") or ""
-            title = (item.get("data") or {}).get("title") or ""
-            tags = zotero.extract_tag_names(item)
-            tags_text = ", ".join(tags) if tags else "-"
-            console.print(
-                f"{count:>2}. [bold cyan]item-key[/bold cyan] : [cyan]{key}[/cyan]  "
-                f"[bold green]title[/bold green] : [green]{title}[/green]  "
-                f"[bold yellow]tags[/bold yellow] : [yellow]{tags_text}[/yellow]"
-            )
-        console.print(f"[cyan]tag={target_tag} displayed={min(count, max_items)}[/cyan]")
+        tags_text = " OR ".join(sorted(tags_to_search))
+        console.print(f"[cyan]tags={tags_text} displayed={min(count, max_items)}[/cyan]")
     finally:
         zotero.close()
 
