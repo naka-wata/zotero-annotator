@@ -11,6 +11,7 @@ import httpx
 import typer
 from pydantic import ValidationError
 from rich.console import Console
+from rich.table import Table
 
 from zotero_annotator.clients.zotero import ZoteroClient
 from zotero_annotator.config import get_core_settings, get_translation_settings
@@ -38,6 +39,7 @@ app.add_typer(dev_app, name="dev")
 console = Console()
 
 _SOURCE_SNIPPET_CHARS = 10
+_SEARCH_TABLE_TRUNCATE_CHARS = 80
 
 
 def _build_source_snippet(text: str, *, chars: int) -> str:
@@ -57,6 +59,21 @@ def _maybe_append_source_snippet(*, translated: str, source: str, enabled: bool,
     if not snippet:
         return translated
     return f"{translated}\n\nSRC: {snippet}"
+
+
+def _truncate_for_table(value: str, *, max_chars: int) -> str:
+    text = " ".join((value or "").split()).strip()
+    if not text:
+        return "-"
+    if len(text) <= max_chars:
+        return text
+    return f"{text[: max_chars - 1].rstrip()}…"
+
+
+def _search_sort_key(item_key: str, matched_tags_by_item_key: dict[str, list[str]], *, base_done_tag: str) -> tuple[int, str]:
+    matched_tags = matched_tags_by_item_key.get(item_key, [])
+    has_base_done = base_done_tag in matched_tags
+    return (0 if has_base_done else 1, item_key)
 
 
 # Search command to list target papers quickly (対象論文を確認する検索コマンド)
@@ -112,17 +129,36 @@ def search(
             if len(items_by_key) >= max_items:
                 break
 
-        for count, (key, item) in enumerate(items_by_key.items(), start=1):
+        table = Table(show_header=True, header_style="bold")
+        table.add_column("#", justify="right", style="dim", no_wrap=True)
+        table.add_column("matched_tags", style="magenta")
+        table.add_column("item-key", style="cyan", no_wrap=True)
+        table.add_column("title", style="green")
+        table.add_column("tags", style="yellow")
+
+        sorted_items = sorted(
+            items_by_key.items(),
+            key=lambda pair: _search_sort_key(
+                pair[0],
+                matched_tags_by_item_key,
+                base_done_tag=settings.z_base_done_tag,
+            ),
+        )
+
+        for count, (key, item) in enumerate(sorted_items, start=1):
             title = (item.get("data") or {}).get("title") or ""
             tags = zotero.extract_tag_names(item)
             tags_text = ", ".join(tags) if tags else "-"
             matched_tags_text = ", ".join(matched_tags_by_item_key.get(key, [])) or "-"
-            console.print(
-                f"{count:>2}. [bold magenta]matched_tags[/bold magenta] : [magenta]{matched_tags_text}[/magenta]  "
-                f"[bold cyan]item-key[/bold cyan] : [cyan]{key}[/cyan]  "
-                f"[bold green]title[/bold green] : [green]{title}[/green]  "
-                f"[bold yellow]tags[/bold yellow] : [yellow]{tags_text}[/yellow]"
+            table.add_row(
+                str(count),
+                matched_tags_text,
+                key,
+                _truncate_for_table(title, max_chars=_SEARCH_TABLE_TRUNCATE_CHARS),
+                _truncate_for_table(tags_text, max_chars=_SEARCH_TABLE_TRUNCATE_CHARS),
             )
+
+        console.print(table)
         tags_text = " OR ".join(tags_to_search)
         console.print(f"[cyan]tags={tags_text} displayed={len(items_by_key)}[/cyan]")
     finally:
