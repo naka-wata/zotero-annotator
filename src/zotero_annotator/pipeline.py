@@ -193,30 +193,35 @@ def process_item_translate_existing_notes(
     processed = 0
     updated = 0
     write_enabled = not dry_run
+    skipped_non_pending = 0
+    skipped_already_translated = 0
+    targeted_missing_para_tag = 0
+    targeted_invalid_para_tag = 0
+    targeted_multiple_para_tags = 0
 
     for ann in annotations:
         ann_key = ann.get("key") or ""
         version = ann.get("version")
         data = dict(ann.get("data") or {})
         tags = zotero.extract_tag_names(ann)
+        if settings.ann_translated_tag in tags:
+            skipped_already_translated += 1
+            continue
+        if settings.ann_pending_translation_tag not in tags:
+            skipped_non_pending += 1
+            continue
+
         para_tags, invalid_para_tags = _split_para_tags(
             tags=tags,
             dedup_prefix=settings.dedup_tag_prefix,
         )
-        if invalid_para_tags:
-            warnings.append(
-                f"stage=match invalid_para_tags item_key={item_key} annotation_key={ann_key} tags={invalid_para_tags[:3]}"
-            )
-        if not para_tags:
-            warnings.append(
-                f"stage=match skip_no_para_hash_tag item_key={item_key} annotation_key={ann_key}"
-            )
-            continue
         targeted += 1
+        if invalid_para_tags:
+            targeted_invalid_para_tag += 1
+        if not para_tags:
+            targeted_missing_para_tag += 1
         if len(para_tags) > 1:
-            warnings.append(
-                f"stage=match multiple_para_tags item_key={item_key} annotation_key={ann_key} count={len(para_tags)}"
-            )
+            targeted_multiple_para_tags += 1
 
         body_field = _detect_annotation_body_field(data)
         source_text = str(data.get(body_field) or "").strip()
@@ -268,6 +273,8 @@ def process_item_translate_existing_notes(
             annotation_data=data,
             version=version,
             translated_text=translated_text,
+            pending_tag=settings.ann_pending_translation_tag,
+            translated_tag=settings.ann_translated_tag,
         )
         if warning_message:
             warnings.append(warning_message)
@@ -287,9 +294,30 @@ def process_item_translate_existing_notes(
 
     skipped_reason = None
     if targeted == 0:
-        skipped_reason = f"stage=match no_para_tagged_annotations item_key={item_key} pdf_key={pdf_key}"
+        skipped_reason = f"stage=match no_pending_tagged_annotations item_key={item_key} pdf_key={pdf_key}"
     elif processed == 0:
         skipped_reason = f"stage=source no_valid_translation_targets item_key={item_key} pdf_key={pdf_key}"
+
+    if skipped_already_translated:
+        warnings.append(
+            f"stage=match skipped_already_translated count={skipped_already_translated}"
+        )
+    if skipped_non_pending:
+        warnings.append(
+            f"stage=match skipped_without_pending_tag count={skipped_non_pending}"
+        )
+    if targeted_missing_para_tag:
+        warnings.append(
+            f"stage=match targeted_missing_para_hash_tag count={targeted_missing_para_tag}"
+        )
+    if targeted_invalid_para_tag:
+        warnings.append(
+            f"stage=match targeted_invalid_para_tags count={targeted_invalid_para_tag}"
+        )
+    if targeted_multiple_para_tags:
+        warnings.append(
+            f"stage=match targeted_multiple_para_tags count={targeted_multiple_para_tags}"
+        )
 
     if write_enabled and processed > 0:
         current_tags = zotero.extract_tag_names(item)
@@ -613,6 +641,7 @@ def process_item_no_translation(
                 comment_text=comment_text,
                 pdf_key=pdf_key,
                 dedup_tags=dedup_tags,
+                extra_tags=[settings.ann_pending_translation_tag],
                 annotation_mode=annotation_mode,
                 page_sizes=page_sizes,
             )
@@ -927,6 +956,8 @@ def _apply_translated_annotation_update(
     annotation_data: Dict[str, Any],
     version: Any,
     translated_text: str,
+    pending_tag: str,
+    translated_tag: str,
 ) -> tuple[int, Optional[str], Optional[str]]:
     if not write_enabled:
         return (
@@ -939,6 +970,17 @@ def _apply_translated_annotation_update(
     patch.setdefault("key", annotation_key)
     patch.setdefault("itemType", "annotation")
     patch[body_field] = translated_text
+    current_tags = [
+        t.get("tag")
+        for t in (annotation_data.get("tags") or [])
+        if isinstance(t, dict) and isinstance(t.get("tag"), str) and t.get("tag").strip()
+    ]
+    next_tags = zotero.merge_tags(
+        current=current_tags,
+        add=[translated_tag],
+        remove=[pending_tag],
+    )
+    patch["tags"] = [{"tag": t} for t in next_tags]
 
     try:
         zotero.update_item(
@@ -984,10 +1026,16 @@ def build_annotation_payload(
     comment_text: str,
     pdf_key: str,
     dedup_tags: List[str],
+    extra_tags: Optional[Sequence[str]] = None,
     annotation_mode: AnnotationMode,
     page_sizes: Dict[int, tuple[float, float]] | None = None,
 ) -> Dict[str, Any]:
     # Build Zotero annotation payload (Zotero注釈ペイロード生成)
+    tag_names = [
+        tag
+        for tag in [*dedup_tags, *(extra_tags or ())]
+        if isinstance(tag, str) and tag.strip()
+    ]
     if annotation_mode == "note":
         note_pos = build_note_position(paragraph, page_sizes=page_sizes)
         return {
@@ -998,7 +1046,7 @@ def build_annotation_payload(
             "annotationPosition": json.dumps(note_pos.annotation_position),
             "annotationPageLabel": str(note_pos.page_index + 1),
             "annotationSortIndex": note_pos.annotation_sort_index,
-            "tags": [{"tag": t} for t in dedup_tags] + [{"tag": "pymupdf-auto"}],
+            "tags": [{"tag": t} for t in tag_names],
         }
 
     # highlight: small fixed rectangle, but still requires pageLabel/sortIndex in Zotero 7.
@@ -1013,5 +1061,5 @@ def build_annotation_payload(
         "annotationPosition": json.dumps(annotation_position),
         "annotationPageLabel": str(note_pos.page_index + 1),
         "annotationSortIndex": note_pos.annotation_sort_index,
-        "tags": [{"tag": t} for t in dedup_tags],
+        "tags": [{"tag": t} for t in tag_names],
     }
