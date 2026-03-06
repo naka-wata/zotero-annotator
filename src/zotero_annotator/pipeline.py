@@ -628,19 +628,18 @@ def process_item_no_translation(
             )
 
     # Auto finalize tags only when all paragraphs are complete (全段落が完了した時だけタグを更新)
-    # If translation is disabled, do not change item tags at all.
-    # (翻訳なしモードではアイテムタグを変更しない)
-    if not dry_run and translator is not None:
+    if not dry_run:
         # If we intentionally limited processing, do not finalize (一部だけ処理するモードでは完了扱いにしない)
         if max_paragraphs >= len(paragraphs):
             required = {f"{settings.dedup_tag_prefix}{h}" for p in paragraphs for h in (p.dedup_hashes or [p.hash])}
             available = set(existing_tags) | set(planned_dedup_tags)
             all_done = required.issubset(available)
             if all_done:
+                finalize_add_tag = settings.z_done_tag if translator is not None else settings.z_base_done_tag
                 current = zotero.extract_tag_names(item)
                 next_tags = zotero.merge_tags(
                     current=current,
-                    add=[settings.z_done_tag],
+                    add=[finalize_add_tag],
                     remove=[settings.z_remove_tag],
                 )
                 try:
