@@ -55,7 +55,7 @@ class CoreSettings(_BaseEnvSettings):
     para_strip_plot_axis_prefix: ClassVar[bool] = True
     # Skip figure/table captions as standalone notes (e.g., "Figure 4: ...", "Table 1: ...").
     # If a caption is mixed with prose in the same paragraph, the caption prefix is removed and the prose is kept.
-    para_skip_captions: ClassVar[bool] = True
+    para_skip_captions: bool = Field(False, alias="PARA_SKIP_CAPTIONS")
     # Drop inline citation markers like "[23]" or "[3, 4]" from extracted text.
     # Default: keep citations in body text.
     para_drop_citations: bool = Field(False, alias="PARA_DROP_CITATIONS")
