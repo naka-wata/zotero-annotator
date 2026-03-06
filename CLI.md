@@ -25,6 +25,11 @@ source .venv/bin/activate
 - `translate` の `--write` 実行が成功した item は、`base-done` が外れて `translated` が付きます。
 - `translate` の dry-run や失敗時はタグは変わりません。タグ遷移は write 時かつ成功時のみ発生します。
 
+annotation-level タグの既定値:
+
+- `ANN_PENDING_TRANSLATION_TAG=za:translate`: base で作成された未翻訳 annotation を示します。
+- `ANN_TRANSLATED_TAG=za:translated`: translate 済み annotation を示します。
+
 ## トップレベルコマンド
 
 - `zotero-annotator search`
@@ -105,6 +110,7 @@ zotero-annotator base --write --item-key ABCD1234
 
 - `--write` かつ完了判定時のみ、`to-translate` を外して `base-done` を付けます。
 - `--read-only` ではタグは変わりません。
+- 新規 annotation には `para:<hash>` と `ANN_PENDING_TRANSLATION_TAG`（既定 `za:translate`）が付きます。
 
 ---
 
@@ -122,7 +128,10 @@ zotero-annotator base --write --item-key ABCD1234
 - `--item-key` 未指定時は `Z_BASE_DONE_TAG`（既定 `base-done`）付き item を一括処理します。
 - **新規注釈は作成せず、既存注釈の `annotationComment`（または `note` 本文）だけ更新します。**
 - 翻訳元は PyMuPDF 再抽出テキストではなく、Zotero 上の既存ノート本文（手修正済み）を使います。
+- 翻訳対象は `ANN_PENDING_TRANSLATION_TAG`（既定 `za:translate`）が付いた annotation のみです。
+- `ANN_TRANSLATED_TAG`（既定 `za:translated`）が付いた annotation は、pending が残っていても再翻訳しません。
 - `--write` かつ成功時のみ、`base-done` を外して `translated` を付けます。
+- annotation 本文更新が成功した場合のみ、同じ更新で `ANN_PENDING_TRANSLATION_TAG` を外して `ANN_TRANSLATED_TAG` を付けます。
 - `--read-only` や失敗時はタグは変わりません。
 
 例:
@@ -144,6 +153,17 @@ zotero-annotator translate --write
 1. 開始時: `to-translate`
 2. `base --write` が完了判定: `base-done`
 3. `translate --write` が成功: `translated`
+
+annotation-level の状態遷移:
+
+1. `base --write` 後: `pending` (`ANN_PENDING_TRANSLATION_TAG`)
+2. `translate --write` 成功後: `translated` (`ANN_TRANSLATED_TAG`)
+
+単一ノートを再翻訳したい場合:
+
+1. Zotero で対象 annotation の `ANN_TRANSLATED_TAG`（既定 `za:translated`）を外す
+2. 同じ annotation に `ANN_PENDING_TRANSLATION_TAG`（既定 `za:translate`）を付ける
+3. `zotero-annotator translate --write --item-key ABCD1234` を実行する
 
 ---
 

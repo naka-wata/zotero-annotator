@@ -60,6 +60,11 @@ DEEPL_API_KEY=YOUR_DEEPL_API_KEY
 - `TARGET_LANG`
 - `DEEPL_API_KEY`（翻訳機能を使う場合）
 
+注釈タグ関連の既定値:
+
+- `ANN_PENDING_TRANSLATION_TAG=za:translate`: base で作成した未翻訳注釈を示す annotation-level タグ
+- `ANN_TRANSLATED_TAG=za:translated`: translate 済み注釈を示す annotation-level タグ
+
 ## Quick start
 
 ```bash
@@ -92,12 +97,19 @@ zotero-annotator search --tag A --tag B
 2. 必要なら Zotero 側で注釈内容を手修正
 3. `translate` で既存注釈本文を in-place 更新
 
+注釈タグの状態遷移:
+
+1. `base --write` が新規ノート注釈を作成すると、各 annotation に `para:<hash>` と `ANN_PENDING_TRANSLATION_TAG`（既定 `za:translate`）が付きます。
+2. `translate` は `ANN_PENDING_TRANSLATION_TAG` が付いた annotation だけを翻訳対象にします。`para:<hash>` は互換性・重複管理用で、対象選別には使いません。
+3. `translate --write` で本文更新が成功した annotation は、同じ更新で `ANN_PENDING_TRANSLATION_TAG` を外し、`ANN_TRANSLATED_TAG`（既定 `za:translated`）を付けます。
+
 重要:
 
 - `translate` には `--tag` がありません。対象選択を単純化し、タグ運用の分岐を減らすためです。
 - `--item-key` を省略した場合は `Z_BASE_DONE_TAG`（既定: `base-done`）の item をまとめて処理します。
 - **`translate` は新規注釈を作成せず、既存注釈の本文（`annotationComment` / `note`）だけを更新します。**
 - 翻訳元は PyMuPDF の再抽出結果ではなく、Zotero 上の既存ノート本文（手修正済み）です。
+- `ANN_TRANSLATED_TAG` が付いた annotation は、pending が残っていても再翻訳しません。
 - `base --write` が完了判定になると、`to-translate` が外れて `base-done` が付きます。
 - `translate --write` が成功すると、`base-done` が外れて `translated` が付きます。
 
@@ -114,6 +126,12 @@ zotero-annotator translate --write
 1. 開始時: `to-translate`
 2. `base --write` 完了後: `base-done`
 3. `translate --write` 成功後: `translated`
+
+単一ノートを再翻訳したい場合:
+
+1. Zotero で対象 annotation の `ANN_TRANSLATED_TAG`（既定 `za:translated`）を外す
+2. 同じ annotation に `ANN_PENDING_TRANSLATION_TAG`（既定 `za:translate`）を付け直す
+3. `zotero-annotator translate --write --item-key ABCD1234` を再実行する
 
 ## Fixed beta behavior
 
