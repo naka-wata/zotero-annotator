@@ -39,12 +39,19 @@ source .venv/bin/activate
 
 タグで Zotero アイテムを一覧表示します（読み取りのみ）。
 
-- `--tag TEXT`: 対象タグ上書き（未指定時は `Z_TARGET_TAG`）
+- `search` は `Z_TARGET_TAG`（既定 `to-translate`）と `Z_BASE_DONE_TAG`（既定 `base-done`）を参照します。
+- 対象タグ集合のルール:
+  - `--tag` 未指定: `Z_TARGET_TAG OR Z_BASE_DONE_TAG`
+  - `--tag` 指定: `Z_BASE_DONE_TAG OR (--tag で指定した全て)`
+- `--tag TEXT`: 対象タグを追加指定（複数指定可）
 - `--max-items INTEGER`: 表示上限（既定 `20`）
 
 例:
 
 ```bash
+zotero-annotator search
+zotero-annotator search --tag A
+zotero-annotator search --tag A --tag B
 zotero-annotator search --tag to-translate --max-items 5
 ```
 

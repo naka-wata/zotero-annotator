@@ -68,6 +68,22 @@ zotero-annotator base --write --item-key ABCD1234
 zotero-annotator translate --write --item-key ABCD1234
 ```
 
+## Search behavior
+
+`zotero-annotator search` は `Z_TARGET_TAG`（既定 `to-translate`）と `Z_BASE_DONE_TAG`（既定 `base-done`）を参照して対象 item を一覧表示します。
+
+- 対象タグ集合のルール:
+  - `--tag` 未指定: `Z_TARGET_TAG OR Z_BASE_DONE_TAG`
+  - `--tag` 指定: `Z_BASE_DONE_TAG OR (--tag で指定した全て)`
+
+例:
+
+```bash
+zotero-annotator search
+zotero-annotator search --tag A
+zotero-annotator search --tag A --tag B
+```
+
 ## Translate workflow
 
 `translate` は `base` で作成済みの注釈を後段で翻訳するためのコマンドです。
