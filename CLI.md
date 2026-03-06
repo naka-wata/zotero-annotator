@@ -17,6 +17,14 @@ source .venv/bin/activate
 - `base`: 翻訳なしで原文注釈を作成する正規コマンド
 - `translate`: 既存注釈を翻訳するコマンド
 
+タグ遷移の考え方:
+
+- `run` は常に翻訳ありで完結するコマンドです。`base` / `translate` の2段階運用とは役割が違います。
+- `base` の `--write` 実行で完了判定になった item は、`to-translate` が外れて `base-done` が付きます。
+- `base` の dry-run ではタグは変わりません。タグ遷移は write 時かつ完了判定時のみ発生します。
+- `translate` の `--write` 実行が成功した item は、`base-done` が外れて `translated` が付きます。
+- `translate` の dry-run や失敗時はタグは変わりません。タグ遷移は write 時かつ成功時のみ発生します。
+
 ## トップレベルコマンド
 
 - `zotero-annotator search`
@@ -57,6 +65,7 @@ zotero-annotator search --tag to-translate --max-items 5
 
 - `--tag` と `--item-key` は同時指定不可
 - 翻訳なし運用は `base` を使用
+- `run` は常に翻訳ありで、`to-translate -> base-done -> translated` の段階運用とは別の役割です
 - `TRANSLATOR_PROVIDER=openai` は未実装
 - 壊れ注釈 = `annotationSortIndex` / `annotationPageLabel` / `annotationPosition` の欠落注釈
 
@@ -85,6 +94,11 @@ zotero-annotator run --write --item-key ABCD1234
 zotero-annotator base --write --item-key ABCD1234
 ```
 
+タグ遷移:
+
+- `--write` かつ完了判定時のみ、`to-translate` を外して `base-done` を付けます。
+- `--read-only` ではタグは変わりません。
+
 ---
 
 ## `zotero-annotator translate`
@@ -101,6 +115,8 @@ zotero-annotator base --write --item-key ABCD1234
 - `--item-key` 未指定時は `Z_BASE_DONE_TAG`（既定 `base-done`）付き item を一括処理します。
 - **新規注釈は作成せず、既存注釈の `annotationComment`（または `note` 本文）だけ更新します。**
 - 翻訳元は PyMuPDF 再抽出テキストではなく、Zotero 上の既存ノート本文（手修正済み）を使います。
+- `--write` かつ成功時のみ、`base-done` を外して `translated` を付けます。
+- `--read-only` や失敗時はタグは変わりません。
 
 例:
 
@@ -115,6 +131,12 @@ zotero-annotator translate --write
 1. `zotero-annotator base --write ...` で原文注釈を作成
 2. Zotero で必要な注釈だけ手修正
 3. `zotero-annotator translate --write ...` で本文を翻訳更新
+
+運用上のタグ遷移:
+
+1. 開始時: `to-translate`
+2. `base --write` が完了判定: `base-done`
+3. `translate --write` が成功: `translated`
 
 ---
 
