@@ -320,30 +320,25 @@ def process_item_translate_existing_notes(
         )
 
     if write_enabled:
-        try:
-            latest_annotations = list(zotero.iter_annotations(parent_key=pdf_key, limit_per_page=100))
-        except httpx.HTTPError as exc:
-            warnings.append(
-                f"stage=fetch_annotations list_annotations_for_completion_check_failed "
-                f"item_key={item_key} pdf_key={pdf_key}: {exc}"
+        pending_count, pending_check_warning = _count_pending_annotations_for_translation(
+            zotero=zotero,
+            item_key=item_key,
+            pdf_key=pdf_key,
+            pending_tag=settings.ann_pending_translation_tag,
+        )
+        if pending_check_warning:
+            warnings.append(pending_check_warning)
+        elif pending_count == 0:
+            current_tags = zotero.extract_tag_names(item)
+            next_tags = zotero.merge_tags(
+                current=current_tags,
+                add=[settings.z_done_tag],
+                remove=[settings.z_base_done_tag],
             )
-        else:
-            pending_count = sum(
-                1
-                for ann in latest_annotations
-                if settings.ann_pending_translation_tag in zotero.extract_tag_names(ann)
-            )
-            if pending_count == 0:
-                current_tags = zotero.extract_tag_names(item)
-                next_tags = zotero.merge_tags(
-                    current=current_tags,
-                    add=[settings.z_done_tag],
-                    remove=[settings.z_base_done_tag],
-                )
-                try:
-                    zotero.update_item_tags(item_key=item_key, tags=next_tags)
-                except httpx.HTTPError as exc:
-                    warnings.append(f"tag_update_failed: {exc}")
+            try:
+                zotero.update_item_tags(item_key=item_key, tags=next_tags)
+            except httpx.HTTPError as exc:
+                warnings.append(f"tag_update_failed: {exc}")
 
     return TranslationItemResult(
         item_key=item_key,
@@ -356,6 +351,30 @@ def process_item_translate_existing_notes(
         skipped_reason=skipped_reason,
         warnings=warnings,
     )
+
+
+def _count_pending_annotations_for_translation(
+    *,
+    zotero: ZoteroClient,
+    item_key: str,
+    pdf_key: str,
+    pending_tag: str,
+) -> tuple[Optional[int], Optional[str]]:
+    try:
+        latest_annotations = list(zotero.iter_annotations(parent_key=pdf_key, limit_per_page=100))
+    except httpx.HTTPError as exc:
+        return (
+            None,
+            f"stage=fetch_annotations list_annotations_for_completion_check_failed "
+            f"item_key={item_key} pdf_key={pdf_key}: {exc}",
+        )
+
+    pending_count = sum(
+        1
+        for ann in latest_annotations
+        if pending_tag in zotero.extract_tag_names(ann)
+    )
+    return pending_count, None
 
 
 def run_no_translation(
