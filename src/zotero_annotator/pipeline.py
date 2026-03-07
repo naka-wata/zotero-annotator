@@ -319,17 +319,31 @@ def process_item_translate_existing_notes(
             f"stage=match targeted_multiple_para_tags count={targeted_multiple_para_tags}"
         )
 
-    if write_enabled and processed > 0:
-        current_tags = zotero.extract_tag_names(item)
-        next_tags = zotero.merge_tags(
-            current=current_tags,
-            add=[settings.z_done_tag],
-            remove=[settings.z_base_done_tag],
-        )
+    if write_enabled:
         try:
-            zotero.update_item_tags(item_key=item_key, tags=next_tags)
+            latest_annotations = list(zotero.iter_annotations(parent_key=pdf_key, limit_per_page=100))
         except httpx.HTTPError as exc:
-            warnings.append(f"tag_update_failed: {exc}")
+            warnings.append(
+                f"stage=fetch_annotations list_annotations_for_completion_check_failed "
+                f"item_key={item_key} pdf_key={pdf_key}: {exc}"
+            )
+        else:
+            pending_count = sum(
+                1
+                for ann in latest_annotations
+                if settings.ann_pending_translation_tag in zotero.extract_tag_names(ann)
+            )
+            if pending_count == 0:
+                current_tags = zotero.extract_tag_names(item)
+                next_tags = zotero.merge_tags(
+                    current=current_tags,
+                    add=[settings.z_done_tag],
+                    remove=[settings.z_base_done_tag],
+                )
+                try:
+                    zotero.update_item_tags(item_key=item_key, tags=next_tags)
+                except httpx.HTTPError as exc:
+                    warnings.append(f"tag_update_failed: {exc}")
 
     return TranslationItemResult(
         item_key=item_key,
@@ -635,13 +649,14 @@ def process_item_no_translation(
                     annotations_created=0,
                     skipped_reason=f"translation_failed(kind={exc.kind} status={exc.status_code}): {exc}",
                 )
+        annotation_extra_tags = [settings.ann_pending_translation_tag] if translator is None else []
         planned_payloads.append(
             build_annotation_payload(
                 paragraph=p,
                 comment_text=comment_text,
                 pdf_key=pdf_key,
                 dedup_tags=dedup_tags,
-                extra_tags=[settings.ann_pending_translation_tag],
+                extra_tags=annotation_extra_tags,
                 annotation_mode=annotation_mode,
                 page_sizes=page_sizes,
             )
@@ -677,11 +692,14 @@ def process_item_no_translation(
             all_done = required.issubset(available)
             if all_done:
                 finalize_add_tag = settings.z_done_tag if translator is not None else settings.z_base_done_tag
+                finalize_remove_tags = [settings.z_remove_tag]
+                if translator is not None:
+                    finalize_remove_tags.append(settings.z_base_done_tag)
                 current = zotero.extract_tag_names(item)
                 next_tags = zotero.merge_tags(
                     current=current,
                     add=[finalize_add_tag],
-                    remove=[settings.z_remove_tag],
+                    remove=finalize_remove_tags,
                 )
                 try:
                     zotero.update_item_tags(item_key=item_key, tags=next_tags)
