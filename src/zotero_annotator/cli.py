@@ -124,10 +124,6 @@ def search(
                     matched_tags.append(target_tag)
                 if key not in items_by_key:
                     items_by_key[key] = item
-                if len(items_by_key) >= max_items:
-                    break
-            if len(items_by_key) >= max_items:
-                break
 
         table = Table(show_header=True, header_style="bold")
         table.add_column("#", justify="right", style="dim", no_wrap=True)
@@ -144,8 +140,9 @@ def search(
                 base_done_tag=settings.z_base_done_tag,
             ),
         )
+        displayed_items = sorted_items[:max_items]
 
-        for count, (key, item) in enumerate(sorted_items, start=1):
+        for count, (key, item) in enumerate(displayed_items, start=1):
             title = (item.get("data") or {}).get("title") or ""
             tags = zotero.extract_tag_names(item)
             tags_text = ", ".join(tags) if tags else "-"
@@ -160,7 +157,7 @@ def search(
 
         console.print(table)
         tags_text = " OR ".join(tags_to_search)
-        console.print(f"[cyan]tags={tags_text} displayed={len(items_by_key)}[/cyan]")
+        console.print(f"[cyan]tags={tags_text} displayed={len(displayed_items)}[/cyan]")
     finally:
         zotero.close()
 
