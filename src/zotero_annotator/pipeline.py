@@ -692,11 +692,14 @@ def process_item_no_translation(
             all_done = required.issubset(available)
             if all_done:
                 finalize_add_tag = settings.z_done_tag if translator is not None else settings.z_base_done_tag
+                finalize_remove_tags = [settings.z_remove_tag]
+                if translator is not None:
+                    finalize_remove_tags.append(settings.z_base_done_tag)
                 current = zotero.extract_tag_names(item)
                 next_tags = zotero.merge_tags(
                     current=current,
                     add=[finalize_add_tag],
-                    remove=[settings.z_remove_tag],
+                    remove=finalize_remove_tags,
                 )
                 try:
                     zotero.update_item_tags(item_key=item_key, tags=next_tags)
