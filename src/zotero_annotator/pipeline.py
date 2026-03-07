@@ -635,13 +635,14 @@ def process_item_no_translation(
                     annotations_created=0,
                     skipped_reason=f"translation_failed(kind={exc.kind} status={exc.status_code}): {exc}",
                 )
+        annotation_extra_tags = [settings.ann_pending_translation_tag] if translator is None else []
         planned_payloads.append(
             build_annotation_payload(
                 paragraph=p,
                 comment_text=comment_text,
                 pdf_key=pdf_key,
                 dedup_tags=dedup_tags,
-                extra_tags=[settings.ann_pending_translation_tag],
+                extra_tags=annotation_extra_tags,
                 annotation_mode=annotation_mode,
                 page_sizes=page_sizes,
             )
