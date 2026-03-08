@@ -297,10 +297,11 @@ zotero-annotator dev delete-broken-annotations --item-key ABCD1234 --write
 
 #### `dev delete-all-annotations`
 
-対象 PDF 添付の注釈を全削除します。
+対象 item の PDF 注釈を全削除します。
 
 - `--item-key TEXT`（必須）
 - `--read-only/--write`（既定 `--write`）
+- `--read-only` は削除対象の確認のみ、`--write` は Zotero 上の対象 PDF 注釈を実際に全削除
 
 ```bash
 zotero-annotator dev delete-all-annotations --item-key ABCD1234 --write
