@@ -11,6 +11,7 @@ from zotero_annotator.services.translators.chat_completions import (
     ChatCompletionsTranslator,
 )
 from zotero_annotator.services.translators.deepl import DeepLTranslator
+from zotero_annotator.services.translators.ollama import OllamaTranslator
 
 
 def build_translator() -> Translator:
@@ -33,12 +34,10 @@ def build_translator() -> Translator:
 
     if runtime.provider == "local_llm":
         local_llm = get_local_llm_runtime()
-        return ChatCompletionsTranslator(
+        return OllamaTranslator(
             api_key=local_llm.api_key,
             model=local_llm.model,
             base_url=local_llm.base_url,
-            provider="local_llm",
-            provider_label="Local LLM",
         )
 
     raise RuntimeError(f"Unsupported TRANSLATOR_PROVIDER: {runtime.provider}")

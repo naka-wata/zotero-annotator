@@ -8,7 +8,10 @@ import httpx
 from zotero_annotator.services.translators.base import (
     TranslationError,
     TranslationErrorKind,
+    TranslationInput,
+    TranslationResult,
 )
+from zotero_annotator.services.translators.prompts import build_overlap_translation_messages
 
 _TRANSLATION_PREFIX_RE = re.compile(
     r"^(?:here is the translation|translation|translated(?:\s+text)?|output)\s*[:：]?\s*",
@@ -35,6 +38,129 @@ def build_chat_completions_request(
         "messages": messages,
         "temperature": 0,
     }
+
+
+def build_chat_completions_url(*, base_url: str) -> str:
+    return f"{base_url.rstrip('/')}/chat/completions"
+
+
+def build_overlap_translation_request(
+    *,
+    model: str,
+    input: TranslationInput,
+    provider: str,
+    provider_label: str,
+) -> dict[str, Any]:
+    try:
+        messages = build_overlap_translation_messages(
+            previous_paragraph=input.previous_paragraph,
+            current_paragraph=input.current_paragraph,
+            next_paragraph=input.next_paragraph,
+        )
+    except ValueError as exc:
+        raise TranslationError(
+            "temporary",
+            f"{provider_label} translation request was invalid: {exc}",
+            provider=provider,
+        ) from exc
+
+    return build_chat_completions_request(
+        model=model,
+        messages=messages,
+    )
+
+
+def request_chat_completions_translation(
+    *,
+    api_key: str,
+    model: str,
+    base_url: str,
+    input: TranslationInput,
+    provider: str,
+    provider_label: str,
+    timeout_seconds: int,
+    connection_failure_hint: str = "",
+) -> TranslationResult:
+    url = build_chat_completions_url(base_url=base_url)
+    payload = build_overlap_translation_request(
+        model=model,
+        input=input,
+        provider=provider,
+        provider_label=provider_label,
+    )
+    headers = build_llm_request_headers(api_key=api_key)
+
+    try:
+        resp = httpx.post(
+            url,
+            json=payload,
+            headers=headers,
+            timeout=timeout_seconds,
+        )
+    except httpx.TimeoutException as exc:
+        raise TranslationError(
+            "temporary",
+            _format_transport_error_message(
+                provider_label=provider_label,
+                detail=f"timed out after {timeout_seconds}s",
+                endpoint_url=url,
+                exception=exc,
+                connection_failure_hint=connection_failure_hint,
+            ),
+            provider=provider,
+        ) from exc
+    except httpx.ConnectError as exc:
+        raise TranslationError(
+            "temporary",
+            _format_transport_error_message(
+                provider_label=provider_label,
+                detail="connection failed",
+                endpoint_url=url,
+                exception=exc,
+                connection_failure_hint=connection_failure_hint,
+            ),
+            provider=provider,
+        ) from exc
+    except httpx.HTTPError as exc:
+        raise TranslationError(
+            "temporary",
+            _format_transport_error_message(
+                provider_label=provider_label,
+                detail="request failed",
+                endpoint_url=url,
+                exception=exc,
+                connection_failure_hint=connection_failure_hint,
+            ),
+            provider=provider,
+        ) from exc
+
+    if resp.status_code >= 400:
+        raise normalize_llm_api_error(
+            resp,
+            provider=provider,
+            provider_label=provider_label,
+        )
+
+    try:
+        response_payload = resp.json()
+    except ValueError as exc:
+        raise TranslationError(
+            "temporary",
+            f"{provider_label} returned invalid JSON",
+            provider=provider,
+            status_code=resp.status_code,
+        ) from exc
+
+    translated_text = extract_chat_completion_translation_text(
+        response_payload,
+        provider=provider,
+        provider_label=provider_label,
+    )
+    return TranslationResult(
+        text=translated_text,
+        provider=provider,
+        model=model,
+    )
 
 
 def extract_chat_completion_translation_text(
@@ -222,3 +348,17 @@ def _safe_llm_api_error_detail(resp: httpx.Response) -> tuple[str, str, str]:
 
     text = (resp.text or "").strip()
     return (text[:200] if text else "unknown"), error_type, error_code
+
+
+def _format_transport_error_message(
+    *,
+    provider_label: str,
+    detail: str,
+    endpoint_url: str,
+    exception: Exception,
+    connection_failure_hint: str,
+) -> str:
+    message = f"{provider_label} {detail} while calling {endpoint_url}: {exception}"
+    if connection_failure_hint:
+        message = f"{message}. {connection_failure_hint}"
+    return message
