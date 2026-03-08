@@ -93,7 +93,7 @@ Local LLM を使う場合の `.env` 例と Ollama の起動手順は [LOCAL_LLM_
 
 ## Local LLM setup
 
-Local LLM (Ollama) を使う場合の詳細手順は [LOCAL_LLM_SETUP.md](/Users/watarunakamura/Desktop/zotero-annotator/LOCAL_LLM_SETUP.md) を参照してください。Docker 版と `macOS local` 版を分けて案内しています。
+Local LLM (Ollama) を使う場合の詳細手順は [LOCAL_LLM_SETUP.md](/Users/watarunakamura/Desktop/zotero-annotator/LOCAL_LLM_SETUP.md) を参照してください。Docker 版と `macOS local` 版を分けて案内しており、macOS では通常 `Ollama app` / `ollama serve` を直接使う方が速いです。
 
 注釈タグ関連の既定値:
 

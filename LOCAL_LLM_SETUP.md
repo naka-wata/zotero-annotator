@@ -35,6 +35,7 @@ LOCAL_LLM_MODEL=qwen2.5:7b-instruct
 ## macOS local
 
 Docker を使わず、macOS 上で Ollama を直接起動する構成です。
+macOS では一般に、Docker を挟むより `Ollama app` または `ollama serve` を直接使う方が起動が速く、オーバーヘッドも少ないため、こちらを優先することを勧めます。
 
 1. Ollama app を起動するか、ターミナルで `ollama serve` を実行して server を立ち上げます。
 
@@ -60,3 +61,4 @@ LOCAL_LLM_MODEL=qwen2.5:7b-instruct
 
 - `LOCAL_LLM_BASE_URL` は `/v1` 付きで設定してください。Ollama の OpenAI 互換 endpoint を使うため、`http://localhost:11434/v1` が必要です。
 - `qwen2.5:7b-instruct` は標準例であり固定ではありません。利用したい別 model を pull したうえで `LOCAL_LLM_MODEL` を差し替えてください。
+- macOS では Docker 版よりこの `macOS local` 構成の方が軽く、初回確認も速いことが多いです。
