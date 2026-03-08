@@ -14,13 +14,14 @@ from rich.console import Console
 from rich.table import Table
 
 from zotero_annotator.clients.zotero import ZoteroClient
-from zotero_annotator.config import get_core_settings, get_translation_settings
+from zotero_annotator.config import get_core_settings, get_translation_runtime
 from zotero_annotator.pipeline import (
     build_annotation_payload,
     run_no_translation,
     run_translate_existing_notes,
 )
 from zotero_annotator.services.annotation_position import build_note_position
+from zotero_annotator.services.paragraphs import Paragraph
 from zotero_annotator.services.paragraph_extractor import extract_paragraphs_from_pdf_bytes
 from zotero_annotator.services.pdf_pages import get_pdf_page_sizes
 from zotero_annotator.services.pymupdf_paragraphs import ExtractionConfig as PyMuPDFExtractionConfig
@@ -29,8 +30,8 @@ from zotero_annotator.services.pymupdf_paragraphs import (
     extract_paragraphs_pymupdf_bytes,
     paragraphs_to_xml,
 )
+from zotero_annotator.services.translators.base import TranslationError, TranslationInput
 from zotero_annotator.services.translators.factory import build_translator
-from zotero_annotator.services.translators.base import TranslationError
 
 
 app = typer.Typer(add_completion=False)
@@ -59,6 +60,41 @@ def _maybe_append_source_snippet(*, translated: str, source: str, enabled: bool,
     if not snippet:
         return translated
     return f"{translated}\n\nSRC: {snippet}"
+
+
+def _build_translation_input(
+    *,
+    current_paragraph: str,
+    source_lang: str,
+    target_lang: str,
+    previous_paragraph: str = "",
+    next_paragraph: str = "",
+) -> TranslationInput:
+    return TranslationInput(
+        previous_paragraph=previous_paragraph,
+        current_paragraph=current_paragraph,
+        next_paragraph=next_paragraph,
+        source_lang=source_lang,
+        target_lang=target_lang,
+    )
+
+
+def _build_paragraph_translation_input(
+    paragraphs: list[Paragraph],
+    index: int,
+    *,
+    source_lang: str,
+    target_lang: str,
+) -> TranslationInput:
+    previous_paragraph = paragraphs[index - 1].text if index > 0 else ""
+    next_paragraph = paragraphs[index + 1].text if index + 1 < len(paragraphs) else ""
+    return _build_translation_input(
+        previous_paragraph=previous_paragraph,
+        current_paragraph=paragraphs[index].text,
+        next_paragraph=next_paragraph,
+        source_lang=source_lang,
+        target_lang=target_lang,
+    )
 
 
 def _truncate_for_table(value: str, *, max_chars: int) -> str:
@@ -184,11 +220,9 @@ def _build_translation_runtime(*, translate: bool) -> Tuple[Optional[object], st
     if not translate:
         return None, "", ""
 
-    tsettings = get_translation_settings()
+    translation_runtime = get_translation_runtime()
     translator = build_translator()
-    source_lang = (tsettings.source_lang or "").strip()
-    target_lang = tsettings.target_lang
-    return translator, source_lang, target_lang
+    return translator, translation_runtime.source_lang, translation_runtime.target_lang
 
 
 def _render_run_results(*, results: list[object], translate: bool) -> None:
@@ -356,10 +390,10 @@ def translate(
 
     try:
         settings = get_core_settings()
-        tsettings = get_translation_settings()
+        translation_runtime = get_translation_runtime()
         translator = build_translator()
-        source_lang = (tsettings.source_lang or "").strip()
-        target_lang = tsettings.target_lang
+        source_lang = translation_runtime.source_lang
+        target_lang = translation_runtime.target_lang
     except ValidationError as exc:
         fail("Invalid .env / environment variables", str(exc))
         return
@@ -493,12 +527,19 @@ def dev_annotate(
         source_text = p.text
         comment_text = source_text
         if translate:
-            tsettings = get_translation_settings()
+            translation_runtime = get_translation_runtime()
             translator = build_translator()
-            source_lang = (tsettings.source_lang or "").strip()
-            target_lang = tsettings.target_lang
+            source_lang = translation_runtime.source_lang
+            target_lang = translation_runtime.target_lang
             try:
-                comment_text = translator.translate(source_text, source_lang=source_lang, target_lang=target_lang).text
+                comment_text = translator.translate(
+                    _build_paragraph_translation_input(
+                        paragraphs,
+                        paragraph_index,
+                        source_lang=source_lang,
+                        target_lang=target_lang,
+                    )
+                ).text
                 comment_text = _maybe_append_source_snippet(
                     translated=comment_text,
                     source=source_text,
@@ -596,10 +637,10 @@ def dev_translate(
 
     # Load settings and create clients (設定読み込みとクライアント作成)
     settings = get_core_settings()
-    tsettings = get_translation_settings()
+    translation_runtime = get_translation_runtime()
     translator = build_translator()
-    source_lang = (tsettings.source_lang or "").strip()
-    target_lang = tsettings.target_lang
+    source_lang = translation_runtime.source_lang
+    target_lang = translation_runtime.target_lang
 
     zotero = ZoteroClient(
         base_url=settings.zotero_base_url,
@@ -652,7 +693,14 @@ def dev_translate(
 
         # Translate and print (翻訳して表示)
         try:
-            result = translator.translate(p.text, source_lang=source_lang, target_lang=target_lang)
+            result = translator.translate(
+                _build_paragraph_translation_input(
+                    paragraphs,
+                    paragraph_index,
+                    source_lang=source_lang,
+                    target_lang=target_lang,
+                )
+            )
         except TranslationError as exc:
             fail("Translation failed", f"kind={exc.kind} provider={exc.provider} status={exc.status_code} detail={exc}")
         console.print(

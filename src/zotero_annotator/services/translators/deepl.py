@@ -6,7 +6,12 @@ from typing import Optional
 import httpx
 from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
 
-from zotero_annotator.services.translators.base import TranslationError, TranslationResult, Translator
+from zotero_annotator.services.translators.base import (
+    TranslationError,
+    TranslationInput,
+    TranslationResult,
+    Translator,
+)
 
 
 @dataclass(frozen=True)
@@ -17,14 +22,14 @@ class DeepLTranslator(Translator):
     timeout_seconds: int = 30
     max_retries: int = 3
 
-    def _translate_once(self, *, text: str, source_lang: Optional[str], target_lang: str) -> TranslationResult:
+    def _translate_once(self, *, input: TranslationInput) -> TranslationResult:
         url = f"{self.api_url.rstrip('/')}/v2/translate"
         data = {
-            "text": text,
-            "target_lang": target_lang,
+            "text": input.current_paragraph,
+            "target_lang": input.target_lang,
         }
-        if source_lang:
-            data["source_lang"] = source_lang
+        if input.source_lang:
+            data["source_lang"] = input.source_lang
         headers = {
             # DeepL deprecated legacy form-body auth; use header-based auth.
             # (DeepLはフォーム認証が廃止され、ヘッダー認証が必須)
@@ -52,7 +57,7 @@ class DeepLTranslator(Translator):
             raise TranslationError("temporary", "DeepL returned empty translation", provider="deepl")
         return TranslationResult(text=translated_text, provider="deepl", model="")
 
-    def translate(self, text: str, source_lang: str, target_lang: str) -> TranslationResult:
+    def translate(self, input: TranslationInput) -> TranslationResult:
         # Retry only on temporary/rate-limit errors (temporary/rate_limitのみリトライ)
         @retry(
             retry=retry_if_exception_type(_RetryableDeepLError),
@@ -62,7 +67,7 @@ class DeepLTranslator(Translator):
         )
         def _run() -> TranslationResult:
             try:
-                return self._translate_once(text=text, source_lang=source_lang or None, target_lang=target_lang)
+                return self._translate_once(input=input)
             except TranslationError as exc:
                 if exc.kind in ("temporary", "rate_limit") and self.max_retries > 1:
                     raise _RetryableDeepLError(exc)

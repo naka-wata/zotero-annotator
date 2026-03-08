@@ -13,7 +13,7 @@ from zotero_annotator.services.annotation_position import build_note_position
 from zotero_annotator.services.paragraphs import Paragraph
 from zotero_annotator.services.paragraph_extractor import extract_paragraphs_from_pdf_bytes
 from zotero_annotator.services.pdf_pages import get_pdf_page_sizes
-from zotero_annotator.services.translators.base import TranslationError, Translator
+from zotero_annotator.services.translators.base import TranslationError, TranslationInput, Translator
 
 
 AnnotationMode = Literal["note", "highlight"]
@@ -49,6 +49,41 @@ class TranslationItemResult:
 
     skipped_reason: Optional[str] = None
     warnings: List[str] = field(default_factory=list)
+
+
+def _build_translation_input(
+    *,
+    current_paragraph: str,
+    source_lang: str,
+    target_lang: str,
+    previous_paragraph: str = "",
+    next_paragraph: str = "",
+) -> TranslationInput:
+    return TranslationInput(
+        previous_paragraph=previous_paragraph,
+        current_paragraph=current_paragraph,
+        next_paragraph=next_paragraph,
+        source_lang=source_lang,
+        target_lang=target_lang,
+    )
+
+
+def _build_paragraph_translation_input(
+    paragraphs: Sequence[Paragraph],
+    index: int,
+    *,
+    source_lang: str,
+    target_lang: str,
+) -> TranslationInput:
+    previous_paragraph = paragraphs[index - 1].text if index > 0 else ""
+    next_paragraph = paragraphs[index + 1].text if index + 1 < len(paragraphs) else ""
+    return _build_translation_input(
+        previous_paragraph=previous_paragraph,
+        current_paragraph=paragraphs[index].text,
+        next_paragraph=next_paragraph,
+        source_lang=source_lang,
+        target_lang=target_lang,
+    )
 
 
 def run_translate_existing_notes(
@@ -232,7 +267,13 @@ def process_item_translate_existing_notes(
             continue
 
         try:
-            translated_text = translator.translate(source_text, source_lang=source_lang, target_lang=target_lang).text
+            translated_text = translator.translate(
+                _build_translation_input(
+                    current_paragraph=source_text,
+                    source_lang=source_lang,
+                    target_lang=target_lang,
+                )
+            ).text
         except TranslationError as exc:
             return TranslationItemResult(
                 item_key=item_key,
@@ -637,7 +678,7 @@ def process_item_no_translation(
     dup = 0
     processed = 0
 
-    for p in paragraphs[:max_paragraphs]:
+    for index, p in enumerate(paragraphs[:max_paragraphs]):
         processed += 1
         dedup_tags = [f"{settings.dedup_tag_prefix}{h}" for h in (p.dedup_hashes or [p.hash])]
         if any(t in existing_tags for t in dedup_tags):
@@ -647,7 +688,14 @@ def process_item_no_translation(
         comment_text = source_text
         if translator is not None:
             try:
-                comment_text = translator.translate(source_text, source_lang=source_lang, target_lang=target_lang).text
+                comment_text = translator.translate(
+                    _build_paragraph_translation_input(
+                        paragraphs,
+                        index,
+                        source_lang=source_lang,
+                        target_lang=target_lang,
+                    )
+                ).text
                 comment_text = _maybe_append_source_snippet(
                     translated=comment_text,
                     source=source_text,

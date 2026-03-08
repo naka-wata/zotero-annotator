@@ -5,6 +5,16 @@ from typing import Literal, Optional, Protocol
 
 
 @dataclass(frozen=True)
+class TranslationInput:
+    # Translation request with paragraph context (前後段落を含む翻訳入力)
+    previous_paragraph: str
+    current_paragraph: str
+    next_paragraph: str
+    source_lang: str
+    target_lang: str
+
+
+@dataclass(frozen=True)
 class TranslationResult:
     # Translation output (翻訳結果)
     text: str
@@ -33,5 +43,4 @@ class TranslationError(RuntimeError):
 
 class Translator(Protocol):
     # Translator interface (翻訳I/F)
-    def translate(self, text: str, source_lang: str, target_lang: str) -> TranslationResult: ...
-
+    def translate(self, input: TranslationInput) -> TranslationResult: ...

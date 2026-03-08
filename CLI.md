@@ -11,6 +11,28 @@ UV_LINK_MODE=copy uv sync --no-editable
 source .venv/bin/activate
 ```
 
+## 翻訳 provider 設定
+
+`.env` で `TRANSLATOR_PROVIDER` を切り替えます。
+
+- `TRANSLATOR_PROVIDER=deepl`: DeepL を使用
+- `TRANSLATOR_PROVIDER=chatgpt`: OpenAI ChatGPT API を使用
+- `TRANSLATOR_PROVIDER=openai`: `chatgpt` の後方互換 alias
+
+必須 env:
+
+- 共通: `TARGET_LANG`
+- DeepL: `DEEPL_API_KEY`
+- ChatGPT: `OPENAI_API_KEY`, `OPENAI_MODEL`
+
+任意 env:
+
+- 共通: `SOURCE_LANG`
+- DeepL: `DEEPL_API_URL`
+- ChatGPT: `OPENAI_BASE_URL`
+
+翻訳 prompt は [src/zotero_annotator/services/translators/prompts.py](/Users/watarunakamura/Desktop/zotero-annotator/src/zotero_annotator/services/translators/prompts.py) で管理し、provider ごとに prompt 文面を分岐させない方針です。
+
 ## コマンドの役割（run / base / translate）
 
 - `run`: 常に翻訳ありで注釈を作成するメインコマンド
@@ -78,7 +100,6 @@ zotero-annotator search --tag to-translate --max-items 5
 - `--tag` と `--item-key` は同時指定不可
 - 翻訳なし運用は `base` を使用
 - `run` は常に翻訳ありで、`to-translate -> base-done -> translated` の段階運用とは別の役割です
-- `TRANSLATOR_PROVIDER=openai` は未実装
 - 壊れ注釈 = `annotationSortIndex` / `annotationPageLabel` / `annotationPosition` の欠落注釈
 
 例:

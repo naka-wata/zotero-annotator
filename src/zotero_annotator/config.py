@@ -1,10 +1,34 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from functools import lru_cache
 from typing import ClassVar, Literal, Optional, Union
 
-from pydantic import Field
+from pydantic import Field, ValidationError
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+TranslatorProviderInput = Literal["deepl", "chatgpt", "openai"]
+TranslatorProvider = Literal["deepl", "chatgpt"]
+
+
+@dataclass(frozen=True)
+class TranslationRuntime:
+    provider: TranslatorProvider
+    target_lang: str
+    source_lang: str = ""
+
+
+@dataclass(frozen=True)
+class DeepLRuntime:
+    api_key: str
+    api_url: str
+
+
+@dataclass(frozen=True)
+class LLMTranslatorRuntime:
+    model: str
+    base_url: str
+    api_key: str = ""
 
 
 class _BaseEnvSettings(BaseSettings):
@@ -96,7 +120,7 @@ class CoreSettings(_BaseEnvSettings):
 
 class TranslatorSettings(_BaseEnvSettings):
     # Translator selection and language settings (翻訳プロバイダ選択と言語設定)
-    translator_provider: Literal["deepl", "openai"] = Field(
+    translator_provider: TranslatorProviderInput = Field(
         "deepl", alias="TRANSLATOR_PROVIDER"
     )
     target_lang: str = Field(..., min_length=1, alias="TARGET_LANG")
@@ -107,6 +131,13 @@ class DeepLSettings(_BaseEnvSettings):
     # DeepL API settings (DeepL API設定)
     deepl_api_key: str = Field(..., min_length=1, alias="DEEPL_API_KEY")
     deepl_api_url: str = Field("https://api-free.deepl.com", min_length=1, alias="DEEPL_API_URL")
+
+
+class ChatGPTSettings(_BaseEnvSettings):
+    # OpenAI ChatGPT API settings (OpenAI ChatGPT API設定)
+    openai_api_key: str = Field(..., min_length=1, alias="OPENAI_API_KEY")
+    openai_model: str = Field(..., min_length=1, alias="OPENAI_MODEL")
+    openai_base_url: str = Field("https://api.openai.com/v1", min_length=1, alias="OPENAI_BASE_URL")
 
 
 @lru_cache
@@ -121,5 +152,79 @@ def get_translation_settings() -> TranslatorSettings:
 
 
 @lru_cache
+def get_translation_runtime() -> TranslationRuntime:
+    settings = get_translation_settings()
+    return TranslationRuntime(
+        provider=_normalize_translator_provider(settings.translator_provider),
+        source_lang=(settings.source_lang or "").strip(),
+        target_lang=settings.target_lang,
+    )
+
+
+@lru_cache
 def get_deepl_settings() -> DeepLSettings:
     return DeepLSettings()
+
+
+@lru_cache
+def get_deepl_runtime() -> DeepLRuntime:
+    try:
+        settings = get_deepl_settings()
+    except ValidationError as exc:
+        raise RuntimeError(
+            _format_provider_settings_error(
+                provider_label="DeepL",
+                required_env=("DEEPL_API_KEY",),
+                optional_env=("DEEPL_API_URL",),
+            )
+        ) from exc
+
+    return DeepLRuntime(
+        api_key=settings.deepl_api_key,
+        api_url=settings.deepl_api_url,
+    )
+
+
+@lru_cache
+def get_chatgpt_settings() -> ChatGPTSettings:
+    return ChatGPTSettings()
+
+
+@lru_cache
+def get_chatgpt_runtime() -> LLMTranslatorRuntime:
+    try:
+        settings = get_chatgpt_settings()
+    except ValidationError as exc:
+        raise RuntimeError(
+            _format_provider_settings_error(
+                provider_label="ChatGPT",
+                required_env=("OPENAI_API_KEY", "OPENAI_MODEL"),
+                optional_env=("OPENAI_BASE_URL",),
+            )
+        ) from exc
+
+    return LLMTranslatorRuntime(
+        api_key=settings.openai_api_key,
+        model=settings.openai_model,
+        base_url=settings.openai_base_url,
+    )
+
+
+def _normalize_translator_provider(provider: TranslatorProviderInput) -> TranslatorProvider:
+    # Keep openai as a backward-compatible alias for the ChatGPT provider.
+    if provider == "openai":
+        return "chatgpt"
+    return provider
+
+
+def _format_provider_settings_error(
+    *,
+    provider_label: str,
+    required_env: tuple[str, ...],
+    optional_env: tuple[str, ...] = (),
+) -> str:
+    required_text = ", ".join(required_env)
+    message = f"{provider_label} translator settings are incomplete or invalid. Required: {required_text}."
+    if optional_env:
+        message += f" Optional: {', '.join(optional_env)}."
+    return message
