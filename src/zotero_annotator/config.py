@@ -2,13 +2,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from functools import lru_cache
-from typing import ClassVar, Literal, Optional, Union
+from typing import Callable, ClassVar, Literal, Optional, Union
 
 from pydantic import Field, ValidationError
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-TranslatorProviderInput = Literal["deepl", "chatgpt", "openai"]
-TranslatorProvider = Literal["deepl", "chatgpt"]
+TranslatorProviderInput = Literal["deepl", "chatgpt", "openai", "local_llm"]
+TranslatorProvider = Literal["deepl", "chatgpt", "local_llm"]
 
 
 @dataclass(frozen=True)
@@ -140,6 +140,13 @@ class ChatGPTSettings(_BaseEnvSettings):
     openai_base_url: str = Field("https://api.openai.com/v1", min_length=1, alias="OPENAI_BASE_URL")
 
 
+class LocalLLMSettings(_BaseEnvSettings):
+    # Local LLM settings for an OpenAI-compatible endpoint such as Ollama.
+    local_llm_base_url: str = Field(..., min_length=1, alias="LOCAL_LLM_BASE_URL")
+    local_llm_model: str = Field(..., min_length=1, alias="LOCAL_LLM_MODEL")
+    local_llm_api_key: str = Field("", alias="LOCAL_LLM_API_KEY")
+
+
 @lru_cache
 def get_core_settings() -> CoreSettings:
     return CoreSettings()
@@ -192,21 +199,60 @@ def get_chatgpt_settings() -> ChatGPTSettings:
 
 @lru_cache
 def get_chatgpt_runtime() -> LLMTranslatorRuntime:
+    return _build_llm_runtime(
+        load_settings=get_chatgpt_settings,
+        provider_label="ChatGPT",
+        required_env=("OPENAI_API_KEY", "OPENAI_MODEL"),
+        optional_env=("OPENAI_BASE_URL",),
+        model_attr="openai_model",
+        base_url_attr="openai_base_url",
+        api_key_attr="openai_api_key",
+    )
+
+
+@lru_cache
+def get_local_llm_settings() -> LocalLLMSettings:
+    return LocalLLMSettings()
+
+
+@lru_cache
+def get_local_llm_runtime() -> LLMTranslatorRuntime:
+    return _build_llm_runtime(
+        load_settings=get_local_llm_settings,
+        provider_label="Local LLM",
+        required_env=("LOCAL_LLM_BASE_URL", "LOCAL_LLM_MODEL"),
+        optional_env=("LOCAL_LLM_API_KEY",),
+        model_attr="local_llm_model",
+        base_url_attr="local_llm_base_url",
+        api_key_attr="local_llm_api_key",
+    )
+
+
+def _build_llm_runtime(
+    *,
+    load_settings: Callable[[], _BaseEnvSettings],
+    provider_label: str,
+    required_env: tuple[str, ...],
+    optional_env: tuple[str, ...],
+    model_attr: str,
+    base_url_attr: str,
+    api_key_attr: str,
+) -> LLMTranslatorRuntime:
     try:
-        settings = get_chatgpt_settings()
+        settings = load_settings()
     except ValidationError as exc:
         raise RuntimeError(
             _format_provider_settings_error(
-                provider_label="ChatGPT",
-                required_env=("OPENAI_API_KEY", "OPENAI_MODEL"),
-                optional_env=("OPENAI_BASE_URL",),
+                provider_label=provider_label,
+                required_env=required_env,
+                optional_env=optional_env,
             )
         ) from exc
 
     return LLMTranslatorRuntime(
-        api_key=settings.openai_api_key,
-        model=settings.openai_model,
-        base_url=settings.openai_base_url,
+        api_key=getattr(settings, api_key_attr),
+        model=getattr(settings, model_attr),
+        base_url=getattr(settings, base_url_attr),
     )
 
 

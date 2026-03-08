@@ -16,7 +16,7 @@ _TRANSLATION_PREFIX_RE = re.compile(
 )
 
 
-def build_openai_compatible_headers(*, api_key: str = "") -> dict[str, str]:
+def build_llm_request_headers(*, api_key: str = "") -> dict[str, str]:
     headers = {
         "Content-Type": "application/json",
     }
@@ -102,14 +102,14 @@ def postprocess_translation_text(
     return candidate
 
 
-def normalize_openai_compatible_error(
+def normalize_llm_api_error(
     resp: httpx.Response,
     *,
     provider: str,
     provider_label: str,
 ) -> TranslationError:
-    detail, error_type, error_code = _safe_openai_compatible_error_detail(resp)
-    kind = classify_openai_compatible_error(
+    detail, error_type, error_code = _safe_llm_api_error_detail(resp)
+    kind = classify_llm_api_error(
         status_code=resp.status_code,
         detail=detail,
         error_type=error_type,
@@ -123,7 +123,7 @@ def normalize_openai_compatible_error(
     )
 
 
-def classify_openai_compatible_error(
+def classify_llm_api_error(
     *,
     status_code: int,
     detail: str = "",
@@ -192,7 +192,7 @@ def _unwrap_code_fence(text: str) -> str:
     return text
 
 
-def _safe_openai_compatible_error_detail(resp: httpx.Response) -> tuple[str, str, str]:
+def _safe_llm_api_error_detail(resp: httpx.Response) -> tuple[str, str, str]:
     detail = ""
     error_type = ""
     error_code = ""
