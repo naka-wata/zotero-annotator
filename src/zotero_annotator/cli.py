@@ -14,7 +14,7 @@ from rich.console import Console
 from rich.table import Table
 
 from zotero_annotator.clients.zotero import ZoteroClient
-from zotero_annotator.config import get_core_settings, get_translation_settings
+from zotero_annotator.config import get_core_settings, get_translation_runtime
 from zotero_annotator.pipeline import (
     build_annotation_payload,
     run_no_translation,
@@ -184,11 +184,9 @@ def _build_translation_runtime(*, translate: bool) -> Tuple[Optional[object], st
     if not translate:
         return None, "", ""
 
-    tsettings = get_translation_settings()
+    translation_runtime = get_translation_runtime()
     translator = build_translator()
-    source_lang = (tsettings.source_lang or "").strip()
-    target_lang = tsettings.target_lang
-    return translator, source_lang, target_lang
+    return translator, translation_runtime.source_lang, translation_runtime.target_lang
 
 
 def _render_run_results(*, results: list[object], translate: bool) -> None:
@@ -356,10 +354,10 @@ def translate(
 
     try:
         settings = get_core_settings()
-        tsettings = get_translation_settings()
+        translation_runtime = get_translation_runtime()
         translator = build_translator()
-        source_lang = (tsettings.source_lang or "").strip()
-        target_lang = tsettings.target_lang
+        source_lang = translation_runtime.source_lang
+        target_lang = translation_runtime.target_lang
     except ValidationError as exc:
         fail("Invalid .env / environment variables", str(exc))
         return
@@ -493,10 +491,10 @@ def dev_annotate(
         source_text = p.text
         comment_text = source_text
         if translate:
-            tsettings = get_translation_settings()
+            translation_runtime = get_translation_runtime()
             translator = build_translator()
-            source_lang = (tsettings.source_lang or "").strip()
-            target_lang = tsettings.target_lang
+            source_lang = translation_runtime.source_lang
+            target_lang = translation_runtime.target_lang
             try:
                 comment_text = translator.translate(source_text, source_lang=source_lang, target_lang=target_lang).text
                 comment_text = _maybe_append_source_snippet(
@@ -596,10 +594,10 @@ def dev_translate(
 
     # Load settings and create clients (設定読み込みとクライアント作成)
     settings = get_core_settings()
-    tsettings = get_translation_settings()
+    translation_runtime = get_translation_runtime()
     translator = build_translator()
-    source_lang = (tsettings.source_lang or "").strip()
-    target_lang = tsettings.target_lang
+    source_lang = translation_runtime.source_lang
+    target_lang = translation_runtime.target_lang
 
     zotero = ZoteroClient(
         base_url=settings.zotero_base_url,
