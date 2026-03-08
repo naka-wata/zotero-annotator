@@ -1,0 +1,36 @@
+# Usage:
+#   docker compose up -d ollama
+#   docker compose --profile init up ollama-pull
+#
+# The `ollama-data` volume persists downloaded models, so
+# `qwen2.5:7b-instruct` does not need to be re-downloaded on each start.
+
+name: zotero-annotator
+
+services:
+  ollama:
+    image: ollama/ollama:latest
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama-data:/root/.ollama
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+
+  ollama-pull:
+    image: ollama/ollama:latest
+    profiles: ["init"]
+    depends_on:
+      ollama:
+        condition: service_healthy
+    environment:
+      OLLAMA_HOST: http://ollama:11434
+    entrypoint: ["ollama"]
+    command: ["pull", "qwen2.5:7b-instruct"]
+
+volumes:
+  ollama-data:
