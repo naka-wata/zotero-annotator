@@ -1276,12 +1276,18 @@ def dev_delete_broken_annotations(
 
 @dev_app.command("delete-all-annotations")
 def dev_delete_all_annotations(
-    item_key: str = typer.Option(..., "--item-key", help="Target item key / 対象アイテムキー"),
+    item_key: str = typer.Option(
+        ...,
+        "--item-key",
+        help="Target item key whose PDF annotations will be deleted / PDF注釈を全削除する対象item-key",
+    ),
     read_only: bool = typer.Option(
-        False, "--read-only/--write", help="Do not write to Zotero / Zoteroに書き込まない"
+        False,
+        "--read-only/--write",
+        help="Preview matching annotations without deleting / --writeでZotero上の対象PDF注釈を全削除",
     ),
 ) -> None:
-    """Delete all annotations for the PDF attachment (PDF添付の全注釈を削除する)."""
+    """Delete all PDF annotations for the target item (対象itemのPDF注釈を全削除する)."""
 
     def fail(stage: str, detail: str) -> None:
         console.print(f"[red]ERROR[/red] {stage}: {detail}")
