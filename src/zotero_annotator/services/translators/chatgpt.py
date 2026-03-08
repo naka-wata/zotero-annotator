@@ -17,7 +17,7 @@ from zotero_annotator.services.translators.llm_common import (
     extract_chat_completion_translation_text,
     normalize_openai_compatible_error,
 )
-from zotero_annotator.services.translators.prompts import build_translation_messages
+from zotero_annotator.services.translators.prompts import build_overlap_translation_messages
 
 
 @dataclass(frozen=True)
@@ -31,7 +31,7 @@ class ChatGPTTranslator(Translator):
 
     def _translate_once(self, *, input: TranslationInput) -> TranslationResult:
         url = f"{self.base_url.rstrip('/')}/chat/completions"
-        messages = build_translation_messages(
+        messages = build_overlap_translation_messages(
             previous_paragraph=input.previous_paragraph,
             current_paragraph=input.current_paragraph,
             next_paragraph=input.next_paragraph,
