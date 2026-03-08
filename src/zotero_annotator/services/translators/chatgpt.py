@@ -32,9 +32,9 @@ class ChatGPTTranslator(Translator):
     def _translate_once(self, *, input: TranslationInput) -> TranslationResult:
         url = f"{self.base_url.rstrip('/')}/chat/completions"
         messages = build_translation_messages(
-            text=input.current_paragraph,
-            source_lang=input.source_lang,
-            target_lang=input.target_lang,
+            previous_paragraph=input.previous_paragraph,
+            current_paragraph=input.current_paragraph,
+            next_paragraph=input.next_paragraph,
         )
         payload = build_chat_completions_request(
             model=self.model,
