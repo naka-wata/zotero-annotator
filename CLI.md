@@ -17,6 +17,7 @@ source .venv/bin/activate
 
 - `TRANSLATOR_PROVIDER=deepl`: DeepL を使用
 - `TRANSLATOR_PROVIDER=chatgpt`: OpenAI ChatGPT API を使用
+- `TRANSLATOR_PROVIDER=local_llm`: Ollama など OpenAI 互換 local LLM を使用
 - `TRANSLATOR_PROVIDER=openai`: `chatgpt` の後方互換 alias
 
 必須 env:
@@ -24,14 +25,50 @@ source .venv/bin/activate
 - 共通: `TARGET_LANG`
 - DeepL: `DEEPL_API_KEY`
 - ChatGPT: `OPENAI_API_KEY`, `OPENAI_MODEL`
+- Local LLM: `LOCAL_LLM_BASE_URL`, `LOCAL_LLM_MODEL`
 
 任意 env:
 
 - 共通: `SOURCE_LANG`
 - DeepL: `DEEPL_API_URL`
 - ChatGPT: `OPENAI_BASE_URL`
+- Local LLM: `LOCAL_LLM_API_KEY`
 
 翻訳 prompt は [src/zotero_annotator/services/translators/prompts.py](/Users/watarunakamura/Desktop/zotero-annotator/src/zotero_annotator/services/translators/prompts.py) で管理し、provider ごとに prompt 文面を分岐させない方針です。
+
+### Local LLM (Ollama) 標準構成
+
+OSS 配布向けの標準例は `Linux + Docker + Ollama` です。初回モデルは `qwen2.5:7b-instruct` を想定し、必要に応じて将来ほかの model へ差し替えできます。
+
+リポジトリ直下の [compose.yaml](/Users/watarunakamura/Desktop/zotero-annotator/compose.yaml) を使う場合:
+
+```bash
+docker compose up -d ollama
+docker compose --profile init up ollama-pull
+```
+
+手元の Ollama server を使う場合の初回 pull:
+
+```bash
+ollama pull qwen2.5:7b-instruct
+```
+
+`.env` の標準例:
+
+```dotenv
+TRANSLATOR_PROVIDER=local_llm
+LOCAL_LLM_BASE_URL=http://localhost:11434/v1
+LOCAL_LLM_MODEL=qwen2.5:7b-instruct
+# Optional:
+# LOCAL_LLM_API_KEY=
+```
+
+注意:
+
+- `LOCAL_LLM_BASE_URL` は OpenAI 互換の `/v1` endpoint を指定します。
+- Ollama server が起動していない状態では `translate` / `run` は失敗します。
+- `qwen2.5:7b-instruct` は標準例であり固定仕様ではありません。別 model を使う場合は pull 済み名を `LOCAL_LLM_MODEL` に設定します。
+- macOS では Docker の代わりに Ollama app または `ollama serve` を使っても構いません。
 
 ## コマンドの役割（run / base / translate）
 
