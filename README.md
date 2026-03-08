@@ -133,23 +133,31 @@ zotero-annotator translate --write
 2. 同じ annotation に `ANN_PENDING_TRANSLATION_TAG`（既定 `za:translate`）を付け直す
 3. `zotero-annotator translate --write --item-key ABCD1234` を再実行する
 
-## Fixed beta behavior
+## Runtime parameters
 
-beta の安定運用のため、以下はコード内固定値です（`.env` で変更不可）。
+`.env` で変更できる主な抽出パラメータ:
+
+- `PARA_MIN_CHARS`, `PARA_MAX_CHARS`: 抽出する段落の文字数範囲
+- `PARA_MIN_MEDIAN_COORD_H`, `PARA_MIN_MEDIAN_COORD_H_AUTO_RATIO`: 小さすぎる文字段落を除外する閾値
+- `PARA_SKIP_ALGORITHMS`: アルゴリズム / 疑似コードの除外
+- `PARA_SKIP_CAPTIONS`: 図表キャプションの除外
+- `PARA_DROP_CITATIONS`: 文中引用番号の除去
+- `PARA_DROP_FOOTNOTE_MARKERS`: 脚注マーカーの除去
+- `PARA_SKIP_REFERENCES`: 参考文献セクションの除外
+- `PARA_SKIP_TABLE_LIKE`: 表本文っぽい段落の除外
+
+現時点でコード固定の主なパラメータ:
 
 - `PARA_CONNECTOR_MAX_CHARS=20`
 - `PARA_MATH_NEWLINES=1`
-- `PARA_SKIP_ALGORITHMS=1`
 - `PARA_STRIP_PLOT_AXIS_PREFIX=1`
-- `PARA_MIN_MEDIAN_COORD_H=auto`
-- `PARA_MIN_MEDIAN_COORD_H_AUTO_RATIO=0.8`
 - `PARA_MERGE_SPLITS=1`
 - `PARA_FORMULA_PLACEHOLDER=[MATH]`
 - `RUN_MAX_PARAGRAPHS_PER_ITEM=100`
 - `RUN_REPAIR_BROKEN_ANNOTATIONS=1`
 - `RUN_DELETE_BROKEN_ANNOTATIONS=1`
-- `ANNOTATION_MODE=note`
 - `LOG_LEVEL=INFO`
+- `ANNOTATION_MODE=note`（通常コマンド。`dev annotate --annotation-mode` では上書き可）
 
 ## Notes
 
