@@ -39,18 +39,29 @@ class CoreSettings(_BaseEnvSettings):
     dedup_tag_prefix: str = "para:"
     para_min_chars: int = Field(60, alias="PARA_MIN_CHARS")
     para_max_chars: int = Field(1500, alias="PARA_MAX_CHARS")
-    # Filter out non-body text like plot axis labels by coordinate height (h).
-    # 0 disables the filter. Typical body lines are ~8-10 in this PDF.
-    para_min_median_coord_h: ClassVar[Union[float, Literal["auto"]]] = "auto"
-    para_min_median_coord_h_auto_ratio: ClassVar[float] = 0.8
+
+    # Extraction params that materially change which paragraphs enter translation.
+    # Keep only the high-impact switches/thresholds env-configurable for now.
+    # Filter out non-body text by minimum median font size.
+    # 0 disables the filter; "auto" derives a threshold from the current PDF.
+    para_min_median_coord_h: Union[float, Literal["auto"]] = Field(
+        "auto",
+        alias="PARA_MIN_MEDIAN_COORD_H",
+    )
+    para_min_median_coord_h_auto_ratio: float = Field(
+        0.8,
+        alias="PARA_MIN_MEDIAN_COORD_H_AUTO_RATIO",
+    )
+    # Skip algorithm/pseudocode blocks (e.g., "Algorithm 1 ...") to avoid noisy notes.
+    para_skip_algorithms: bool = Field(True, alias="PARA_SKIP_ALGORITHMS")
+
+    # Locked extraction internals: keep fixed until we intentionally expose them.
     para_merge_splits: ClassVar[bool] = True
     para_formula_placeholder: ClassVar[str] = "[MATH]"
     # Insert newlines around [MATH] (n) tokens for readability.
     para_math_newlines: ClassVar[bool] = True
     # Treat very short connector-only paragraphs (e.g., "where") specially: merge before filtering.
     para_connector_max_chars: ClassVar[int] = 20
-    # Skip algorithm/pseudocode blocks (e.g., "Algorithm 1 ...") to avoid noisy notes.
-    para_skip_algorithms: ClassVar[bool] = True
     # Strip plot/axis label noise that sometimes appears before "Figure N:" in a paragraph.
     para_strip_plot_axis_prefix: ClassVar[bool] = True
     # Skip figure/table captions as standalone notes (e.g., "Figure 4: ...", "Table 1: ...").
