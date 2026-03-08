@@ -5,7 +5,12 @@ from dataclasses import dataclass
 import httpx
 from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
 
-from zotero_annotator.services.translators.base import TranslationError, TranslationResult, Translator
+from zotero_annotator.services.translators.base import (
+    TranslationError,
+    TranslationInput,
+    TranslationResult,
+    Translator,
+)
 from zotero_annotator.services.translators.llm_common import (
     build_chat_completions_request,
     build_openai_compatible_headers,
@@ -24,12 +29,12 @@ class ChatGPTTranslator(Translator):
     timeout_seconds: int = 30
     max_retries: int = 3
 
-    def _translate_once(self, *, text: str, source_lang: str, target_lang: str) -> TranslationResult:
+    def _translate_once(self, *, input: TranslationInput) -> TranslationResult:
         url = f"{self.base_url.rstrip('/')}/chat/completions"
         messages = build_translation_messages(
-            text=text,
-            source_lang=source_lang,
-            target_lang=target_lang,
+            text=input.current_paragraph,
+            source_lang=input.source_lang,
+            target_lang=input.target_lang,
         )
         payload = build_chat_completions_request(
             model=self.model,
@@ -85,7 +90,7 @@ class ChatGPTTranslator(Translator):
             model=self.model,
         )
 
-    def translate(self, text: str, source_lang: str, target_lang: str) -> TranslationResult:
+    def translate(self, input: TranslationInput) -> TranslationResult:
         @retry(
             retry=retry_if_exception_type(_RetryableChatGPTError),
             stop=stop_after_attempt(self.max_retries),
@@ -94,11 +99,7 @@ class ChatGPTTranslator(Translator):
         )
         def _run() -> TranslationResult:
             try:
-                return self._translate_once(
-                    text=text,
-                    source_lang=source_lang,
-                    target_lang=target_lang,
-                )
+                return self._translate_once(input=input)
             except TranslationError as exc:
                 if exc.kind in ("temporary", "rate_limit") and self.max_retries > 1:
                     raise _RetryableChatGPTError(exc)
