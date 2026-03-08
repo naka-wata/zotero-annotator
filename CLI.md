@@ -32,7 +32,7 @@ source .venv/bin/activate
 - 共通: `SOURCE_LANG`
 - DeepL: `DEEPL_API_URL`
 - ChatGPT: `OPENAI_BASE_URL`
-- Local LLM: `LOCAL_LLM_API_KEY`
+- Local LLM: `LOCAL_LLM_API_KEY`, `LOCAL_LLM_TEMPERATURE`, `LOCAL_LLM_TOP_P`
 
 Local LLM の詳細セットアップは [LOCAL_LLM_SETUP.md](/Users/watarunakamura/Desktop/zotero-annotator/LOCAL_LLM_SETUP.md) を参照してください。
 

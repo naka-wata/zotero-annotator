@@ -26,6 +26,8 @@ class ChatCompletionsTranslator(Translator):
     timeout_seconds: int = 30
     max_retries: int = 3
     connection_failure_hint: str = ""
+    temperature: float = 0.0
+    top_p: float | None = None
 
     def _translate_once(self, *, input: TranslationInput) -> TranslationResult:
         return request_chat_completions_translation(
@@ -37,6 +39,8 @@ class ChatCompletionsTranslator(Translator):
             provider_label=self.provider_label,
             timeout_seconds=self.timeout_seconds,
             connection_failure_hint=self.connection_failure_hint,
+            temperature=self.temperature,
+            top_p=self.top_p,
         )
 
     def translate(self, input: TranslationInput) -> TranslationResult:

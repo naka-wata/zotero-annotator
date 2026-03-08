@@ -29,6 +29,8 @@ class LLMTranslatorRuntime:
     model: str
     base_url: str
     api_key: str = ""
+    temperature: float = 0.0
+    top_p: float | None = None
 
 
 class _BaseEnvSettings(BaseSettings):
@@ -145,6 +147,8 @@ class LocalLLMSettings(_BaseEnvSettings):
     local_llm_base_url: str = Field(..., min_length=1, alias="LOCAL_LLM_BASE_URL")
     local_llm_model: str = Field(..., min_length=1, alias="LOCAL_LLM_MODEL")
     local_llm_api_key: str = Field("", alias="LOCAL_LLM_API_KEY")
+    local_llm_temperature: float = Field(0.1, alias="LOCAL_LLM_TEMPERATURE")
+    local_llm_top_p: float = Field(0.9, alias="LOCAL_LLM_TOP_P")
 
 
 @lru_cache
@@ -221,10 +225,12 @@ def get_local_llm_runtime() -> LLMTranslatorRuntime:
         load_settings=get_local_llm_settings,
         provider_label="Local LLM",
         required_env=("LOCAL_LLM_BASE_URL", "LOCAL_LLM_MODEL"),
-        optional_env=("LOCAL_LLM_API_KEY",),
+        optional_env=("LOCAL_LLM_API_KEY", "LOCAL_LLM_TEMPERATURE", "LOCAL_LLM_TOP_P"),
         model_attr="local_llm_model",
         base_url_attr="local_llm_base_url",
         api_key_attr="local_llm_api_key",
+        temperature_attr="local_llm_temperature",
+        top_p_attr="local_llm_top_p",
     )
 
 
@@ -237,6 +243,8 @@ def _build_llm_runtime(
     model_attr: str,
     base_url_attr: str,
     api_key_attr: str,
+    temperature_attr: str | None = None,
+    top_p_attr: str | None = None,
 ) -> LLMTranslatorRuntime:
     try:
         settings = load_settings()
@@ -253,6 +261,8 @@ def _build_llm_runtime(
         api_key=getattr(settings, api_key_attr),
         model=getattr(settings, model_attr),
         base_url=getattr(settings, base_url_attr),
+        temperature=getattr(settings, temperature_attr) if temperature_attr else 0.0,
+        top_p=getattr(settings, top_p_attr) if top_p_attr else None,
     )
 
 

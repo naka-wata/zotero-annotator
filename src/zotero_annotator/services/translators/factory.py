@@ -38,6 +38,8 @@ def build_translator() -> Translator:
             api_key=local_llm.api_key,
             model=local_llm.model,
             base_url=local_llm.base_url,
+            temperature=local_llm.temperature,
+            top_p=local_llm.top_p,
         )
 
     raise RuntimeError(f"Unsupported TRANSLATOR_PROVIDER: {runtime.provider}")

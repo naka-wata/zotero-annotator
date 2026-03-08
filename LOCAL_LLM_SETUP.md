@@ -25,12 +25,15 @@ docker compose --profile init up ollama-pull
 TRANSLATOR_PROVIDER=local_llm
 LOCAL_LLM_BASE_URL=http://localhost:11434/v1
 LOCAL_LLM_MODEL=qwen2.5:7b-instruct
+LOCAL_LLM_TEMPERATURE=0.1
+LOCAL_LLM_TOP_P=0.9
 ```
 
 注意:
 
 - `LOCAL_LLM_BASE_URL` は OpenAI 互換の `/v1` endpoint が必要です。`http://localhost:11434` ではなく `http://localhost:11434/v1` を使ってください。
 - `qwen2.5:7b-instruct` は標準例であり固定ではありません。別 model を使う場合は pull 済み名を `LOCAL_LLM_MODEL` に設定してください。
+- `LOCAL_LLM_TEMPERATURE` / `LOCAL_LLM_TOP_P` で local LLM の生成挙動を調整できます。標準例では Qwen 向けに `0.1` / `0.9` を使います。
 
 ## macOS local
 
@@ -55,10 +58,13 @@ ollama pull qwen2.5:7b-instruct
 TRANSLATOR_PROVIDER=local_llm
 LOCAL_LLM_BASE_URL=http://localhost:11434/v1
 LOCAL_LLM_MODEL=qwen2.5:7b-instruct
+LOCAL_LLM_TEMPERATURE=0.1
+LOCAL_LLM_TOP_P=0.9
 ```
 
 注意:
 
 - `LOCAL_LLM_BASE_URL` は `/v1` 付きで設定してください。Ollama の OpenAI 互換 endpoint を使うため、`http://localhost:11434/v1` が必要です。
 - `qwen2.5:7b-instruct` は標準例であり固定ではありません。利用したい別 model を pull したうえで `LOCAL_LLM_MODEL` を差し替えてください。
+- `LOCAL_LLM_TEMPERATURE` / `LOCAL_LLM_TOP_P` は local LLM の生成挙動調整用です。標準例では Qwen 向けに `0.1` / `0.9` を使います。
 - macOS では Docker 版よりこの `macOS local` 構成の方が軽く、初回確認も速いことが多いです。

@@ -69,7 +69,7 @@ DEEPL_API_KEY=YOUR_DEEPL_API_KEY
 - ChatGPT の必須 env: `OPENAI_API_KEY`, `OPENAI_MODEL`
 - ChatGPT の任意 env: `OPENAI_BASE_URL`
 - Local LLM の必須 env: `LOCAL_LLM_BASE_URL`, `LOCAL_LLM_MODEL`
-- Local LLM の任意 env: `LOCAL_LLM_API_KEY`
+- Local LLM の任意 env: `LOCAL_LLM_API_KEY`, `LOCAL_LLM_TEMPERATURE`, `LOCAL_LLM_TOP_P`
 - 共通の任意 env: `SOURCE_LANG`（未設定時は provider 側の自動判定）
 
 例:

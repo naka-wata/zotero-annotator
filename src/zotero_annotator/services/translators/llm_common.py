@@ -32,12 +32,17 @@ def build_chat_completions_request(
     *,
     model: str,
     messages: list[dict[str, str]],
+    temperature: float = 0.0,
+    top_p: float | None = None,
 ) -> dict[str, Any]:
-    return {
+    payload = {
         "model": model,
         "messages": messages,
-        "temperature": 0,
+        "temperature": temperature,
     }
+    if top_p is not None:
+        payload["top_p"] = top_p
+    return payload
 
 
 def build_chat_completions_url(*, base_url: str) -> str:
@@ -50,6 +55,8 @@ def build_overlap_translation_request(
     input: TranslationInput,
     provider: str,
     provider_label: str,
+    temperature: float = 0.0,
+    top_p: float | None = None,
 ) -> dict[str, Any]:
     try:
         messages = build_overlap_translation_messages(
@@ -67,6 +74,8 @@ def build_overlap_translation_request(
     return build_chat_completions_request(
         model=model,
         messages=messages,
+        temperature=temperature,
+        top_p=top_p,
     )
 
 
@@ -80,6 +89,8 @@ def request_chat_completions_translation(
     provider_label: str,
     timeout_seconds: int,
     connection_failure_hint: str = "",
+    temperature: float = 0.0,
+    top_p: float | None = None,
 ) -> TranslationResult:
     url = build_chat_completions_url(base_url=base_url)
     payload = build_overlap_translation_request(
@@ -87,6 +98,8 @@ def request_chat_completions_translation(
         input=input,
         provider=provider,
         provider_label=provider_label,
+        temperature=temperature,
+        top_p=top_p,
     )
     headers = build_llm_request_headers(api_key=api_key)
 
