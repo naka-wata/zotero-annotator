@@ -3,7 +3,7 @@ from __future__ import annotations
 TRANSLATION_SYSTEM_PROMPT = (
     "You are a translation engine. "
     "Translate only the user-provided text. "
-    "Do not add explanations, notes, or quotation marks. "
+    "Do not add explanations, notes, quotation marks, or markdown fences. "
     "Preserve line breaks, [MATH] tokens, and the original structure."
 )
 
@@ -22,7 +22,7 @@ def build_translation_user_prompt(*, text: str, source_lang: str, target_lang: s
         "Rules:\n"
         "- Return only the translated text.\n"
         "- Preserve paragraph breaks, [MATH] tokens, and spacing as much as possible.\n"
-        "- Do not add commentary or prefixes.\n"
+        "- Do not add commentary, prefixes, or markdown code fences.\n"
         "<text>\n"
         f"{text}\n"
         "</text>"
