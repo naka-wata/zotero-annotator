@@ -3,6 +3,8 @@
 このドキュメントは現在の `zotero-annotator` CLI 実装に合わせた使い方メモです。  
 beta 版は **PyMuPDF 固定**で動作し、GROBID コマンドはありません。
 
+通常運用の流れとタグ遷移は [workflows.md](workflows.md) を参照してください。通常運用の推奨ルートは `base -> translate` です。`dev` コマンドと開発向け補助情報は [development.md](development.md) にまとめています。
+
 ## 実行前提
 
 ```bash
@@ -36,15 +38,12 @@ source .venv/bin/activate
 
 Local LLM の詳細セットアップは [local-llm.md](local-llm.md) を参照してください。
 
-翻訳 prompt は [src/zotero_annotator/services/translators/prompts.py](../src/zotero_annotator/services/translators/prompts.py) で管理し、provider ごとに prompt 文面を分岐させない方針です。
-
 ## コマンド一覧
 
 - `zotero-annotator search`: 対象 item を確認する
-- `zotero-annotator run`: 抽出から翻訳付き注釈作成まで一気に実行する
 - `zotero-annotator base`: 翻訳なしで原文注釈を作成する
 - `zotero-annotator translate`: 既存注釈だけを翻訳更新する
-- `zotero-annotator dev ...`: 検証・監査・修復用の補助コマンド
+- `zotero-annotator run`: 抽出から翻訳付き注釈作成まで一気に実行する
 
 ## `zotero-annotator search`
 
@@ -65,7 +64,7 @@ zotero-annotator search --tag to-translate --max-items 5
 
 ## `zotero-annotator run`
 
-抽出から翻訳付き注釈作成までを一度に実行するメインコマンドです。
+抽出から翻訳付き注釈作成までを一度に実行する一括実行コマンドです。
 
 - `--tag TEXT`: タグ指定実行
 - `--item-key TEXT`（複数可）: item 指定実行
@@ -77,8 +76,9 @@ zotero-annotator search --tag to-translate --max-items 5
 注意:
 
 - `--tag` と `--item-key` は同時指定できません。
-- `run` は常に翻訳ありです。翻訳なし運用は `base`、後段翻訳は `translate` を使います。
 - 壊れ注釈は `annotationSortIndex` / `annotationPageLabel` / `annotationPosition` の欠落注釈を指します。
+- 通常運用では `base -> translate` を推奨します。`run` は手修正を挟まない一括実行向けです。
+- 運用フローの使い分けは [workflows.md](workflows.md) を参照してください。
 
 代表コマンド:
 
@@ -89,7 +89,7 @@ zotero-annotator run --tag to-translate --max-items 5
 
 ## `zotero-annotator base`
 
-翻訳なしで原文注釈を作成します。`base -> translate` の2段階運用の前段です。
+翻訳なしで原文注釈を作成します。
 
 - `--tag TEXT`: タグ指定実行
 - `--item-key TEXT`（複数可）: item 指定実行
@@ -97,12 +97,8 @@ zotero-annotator run --tag to-translate --max-items 5
 - `--read-only/--write`: 書き込み有無（既定 `--write`）
 - `--delete-broken`: 実行前に壊れ注釈を削除
 - `--keep-broken`: 壊れ注釈削除を抑止
-
-タグ遷移:
-
-- `--write` かつ完了判定時のみ、`to-translate` を外して `base-done` を付けます。
-- `--read-only` では item タグは変わりません。
-- 新規 annotation には `para:<hash>` と `ANN_PENDING_TRANSLATION_TAG`（既定 `za:translate`）が付きます。
+- 通常運用の推奨ルートでは、このコマンドを先に実行します。
+- タグ遷移と `base -> translate` の流れは [workflows.md](workflows.md) を参照してください。
 
 代表コマンド:
 
@@ -123,17 +119,8 @@ zotero-annotator base --tag to-translate --max-items 5
 
 - `translate` には `--tag` はありません。
 - `--item-key` 未指定時は `Z_BASE_DONE_TAG`（既定 `base-done`）付き item を一括処理します。
-- 翻訳元は PyMuPDF の再抽出結果ではなく、Zotero 上の既存ノート本文です。
-- 翻訳対象は `ANN_PENDING_TRANSLATION_TAG`（既定 `za:translate`）が付いた annotation のみです。
-- `ANN_TRANSLATED_TAG`（既定 `za:translated`）が付いた annotation は再翻訳しません。
-- `--write` かつ成功時のみ、`base-done` を外して `translated` を付けます。
-- annotation 本文更新が成功した場合のみ、同じ更新で `ANN_PENDING_TRANSLATION_TAG` を外して `ANN_TRANSLATED_TAG` を付けます。
-
-推奨フロー:
-
-1. `zotero-annotator base --write ...` で原文注釈を作成
-2. Zotero で必要な注釈だけ手修正
-3. `zotero-annotator translate --write ...` で本文を翻訳更新
+- 通常運用の推奨ルートでは、`base` の後にこのコマンドを実行します。
+- タグ遷移、対象 annotation の条件、再翻訳手順は [workflows.md](workflows.md) を参照してください。
 
 代表コマンド:
 
@@ -141,62 +128,3 @@ zotero-annotator base --tag to-translate --max-items 5
 zotero-annotator translate --write --item-key ABCD1234
 zotero-annotator translate --write
 ```
-
-単一ノートを再翻訳したい場合:
-
-1. Zotero で対象 annotation の `ANN_TRANSLATED_TAG`（既定 `za:translated`）を外す
-2. 同じ annotation に `ANN_PENDING_TRANSLATION_TAG`（既定 `za:translate`）を付ける
-3. `zotero-annotator translate --write --item-key ABCD1234` を実行する
-
-## `zotero-annotator dev`
-
-`dev` は検証・監査・修復用です。通常運用は `run` / `base` / `translate` を使い、必要なときだけ `dev` を使います。
-
-代表サブコマンド:
-
-- `dev dump-xml`: PyMuPDF 段落抽出結果を XML 出力
-- `dev dump-pymupdf-raw-text`: 段落化前の raw text を JSON 出力
-- `dev dump-pymupdf-dict`: `page.get_text("dict")` の生データを JSON 出力
-- `dev reconstruct-from-pymupdf-dict`: 既存 JSON から段落を再構築
-- `dev paragraphs`: 抽出段落の確認
-- `dev annotate`: 1段落だけ注釈作成または dry-run
-- `dev translate`: 1段落だけ翻訳結果を確認
-- `dev audit-annotations`: 既存注釈との整合性監査
-- `dev repair-annotations`: 壊れ注釈の修復
-- `dev delete-broken-annotations`: 壊れ注釈だけ削除
-- `dev delete-all-annotations`: 対象 item の PDF 注釈を全削除
-
-代表コマンド:
-
-```bash
-zotero-annotator dev paragraphs --item-key ABCD1234 --max-rows 30
-zotero-annotator dev annotate --item-key ABCD1234 --paragraph-index 0 --read-only
-zotero-annotator dev audit-annotations --item-key ABCD1234
-zotero-annotator dev repair-annotations --item-key ABCD1234 --write
-```
-
-## runtime パラメータ
-
-`.env` で変更できる主な抽出パラメータ:
-
-- `PARA_MIN_CHARS`, `PARA_MAX_CHARS`: 抽出する段落の文字数範囲
-- `PARA_MIN_MEDIAN_COORD_H`, `PARA_MIN_MEDIAN_COORD_H_AUTO_RATIO`: 小さすぎる文字段落を除外する閾値
-- `PARA_SKIP_ALGORITHMS`: アルゴリズム / 疑似コードの除外
-- `PARA_SKIP_CAPTIONS`: 図表キャプションの除外
-- `PARA_DROP_CITATIONS`: 文中引用番号の除去
-- `PARA_DROP_FOOTNOTE_MARKERS`: 脚注マーカーの除去
-- `PARA_SKIP_REFERENCES`: 参考文献セクションの除外
-- `PARA_SKIP_TABLE_LIKE`: 表本文っぽい段落の除外
-
-コード固定の主なパラメータ:
-
-- `PARA_CONNECTOR_MAX_CHARS=20`
-- `PARA_MATH_NEWLINES=1`
-- `PARA_STRIP_PLOT_AXIS_PREFIX=1`
-- `PARA_MERGE_SPLITS=1`
-- `PARA_FORMULA_PLACEHOLDER=[MATH]`
-- `RUN_MAX_PARAGRAPHS_PER_ITEM=100`
-- `RUN_REPAIR_BROKEN_ANNOTATIONS=1`
-- `RUN_DELETE_BROKEN_ANNOTATIONS=1`
-- `LOG_LEVEL=INFO`
-- `ANNOTATION_MODE=note`（通常コマンド。`dev annotate --annotation-mode` では上書き可）
