@@ -1,6 +1,6 @@
-# Development Guide
+# 開発ガイド
 
-このドキュメントは `zotero-annotator dev` の補助コマンドと、開発時に確認する runtime パラメータをまとめたものです。通常利用者向けの CLI リファレンスは [cli.md](cli.md) を参照してください。
+このドキュメントは `zotero-annotator dev` の補助コマンドと、開発時に確認する実行時パラメータをまとめたものです。通常利用者向けの CLI は [CLI リファレンス](cli.md)、タグ運用は [運用フロー](workflows.md) を参照してください。
 
 ## 基本方針
 
@@ -35,34 +35,34 @@
   - `--write` を付けると 1 件だけ注釈を作成します。
   - `--translate` で翻訳付きコメントに切り替えられます。
   - `--annotation-mode note|highlight` で出力モードを上書きできます。
-  - 既存 annotation に同じ `para:<hash>` があれば重複としてスキップします。
+  - 既存注釈に同じ `para:<hash>` があれば重複としてスキップします。
 - `dev translate --item-key ABCD1234 --paragraph-index 0`
   - 1 段落だけ翻訳し、source と translated をその場で表示します。
   - 注釈は作成しません。
 
-### 既存 annotation を監査・修復する
+### 既存注釈を監査・修復する
 
 - `dev audit-annotations --item-key ABCD1234`
-  - 現在の抽出段落と既存 annotation を突き合わせます。
+  - 現在の抽出段落と既存注釈を突き合わせます。
   - `para:<hash>` の不足や、`annotationSortIndex` / `annotationPageLabel` / `annotationPosition` の欠落を確認するときに使います。
   - `--max-problem-rows N` で問題行の表示数を絞れます。
 - `dev repair-annotations --item-key ABCD1234 --read-only`
-  - `para:<hash>` を手がかりに、壊れた annotation の位置情報を再計算します。
+  - `para:<hash>` を手がかりに、壊れた注釈の位置情報を再計算します。
   - 修復対象は `annotationSortIndex` / `annotationPageLabel` / `annotationPosition` の欠落注釈です。
-  - `--write` で Zotero 上の annotation を更新します。
+  - `--write` で Zotero 上の注釈を更新します。
 
-### 壊れ annotation を削除する
+### 壊れた注釈を削除する
 
 - `dev delete-broken-annotations --item-key ABCD1234 --read-only`
-  - 必須フィールドが欠けた annotation だけを列挙します。
-  - `--write` で該当 annotation を削除します。
+  - 必須フィールドが欠けた注釈だけを列挙します。
+  - `--write` で該当注釈を削除します。
 - `dev delete-all-annotations --item-key ABCD1234 --read-only`
-  - 対象 item の PDF annotation を全件確認します。
-  - `--write` で対象 PDF 配下の annotation を全削除します。
+  - 対象 item の PDF 注釈を全件確認します。
+  - `--write` で対象 PDF 配下の注釈を全削除します。
 
-## runtime パラメータ
+## 実行時パラメータ
 
-`.env` で変更できるキー名と既定値は [../.env.example](../.env.example) が正本です。用途ごとの説明は [configuration.md](configuration.md) を参照してください。
+`.env` で変更できるキー名と既定値は [../.env.example](../.env.example) が正本です。用途ごとの説明は [設定](configuration.md) を参照してください。
 
 ### 主な可変パラメータ
 
@@ -90,4 +90,4 @@
 
 ## 実装メモ
 
-- 翻訳 prompt は [../src/zotero_annotator/services/translators/prompts.py](../src/zotero_annotator/services/translators/prompts.py) で管理しています。
+- 翻訳プロンプトは [../src/zotero_annotator/services/translators/prompts.py](../src/zotero_annotator/services/translators/prompts.py) で管理しています。

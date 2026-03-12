@@ -1,6 +1,6 @@
-# Workflows
+# 運用フロー
 
-このドキュメントは通常運用の流れとタグ遷移をまとめたものです。CLI のオプション一覧は [cli.md](cli.md) を参照してください。
+このドキュメントは通常運用の流れとタグ遷移をまとめたものです。CLI のオプション一覧は [CLI リファレンス](cli.md)、関連する `.env` キーは [設定](configuration.md) を参照してください。
 
 ## どの流れを使うか
 
@@ -30,7 +30,7 @@
 1. 必要なら `zotero-annotator search` で対象 item を確認します。
 2. `zotero-annotator run --write ...` を実行します。
 3. PyMuPDF で段落抽出し、そのまま翻訳付き注釈を作成します。
-4. 完了判定になった item は `Z_DONE_TAG`（既定 `translated`）が付き、`Z_REMOVE_TAG`（既定 `to-translate`）と `Z_BASE_DONE_TAG` が外れます。
+4. 完了判定になった item には `Z_DONE_TAG`（既定 `translated`）が付き、`Z_REMOVE_TAG`（既定 `to-translate`）と `Z_BASE_DONE_TAG` が外れます。
 5. `--read-only` では Zotero 書き込みもタグ更新も行いません。
 
 代表コマンド:
@@ -46,13 +46,13 @@ zotero-annotator run --tag to-translate --max-items 5
 
 1. `zotero-annotator base --write ...` で原文ノート注釈を作成します。
 2. `base --write` が完了判定になると、item から `Z_REMOVE_TAG`（既定 `to-translate`）が外れ、`Z_BASE_DONE_TAG`（既定 `base-done`）が付きます。
-3. `base` が新規作成した annotation には `para:<hash>` と `ANN_PENDING_TRANSLATION_TAG`（既定 `za:translate`）が付きます。
+3. `base` が新規作成した注釈には `para:<hash>` と `ANN_PENDING_TRANSLATION_TAG`（既定 `za:translate`）が付きます。
 4. 必要なら Zotero 上で注釈本文を手修正します。
 5. `zotero-annotator translate --write ...` で既存注釈本文を in-place 更新します。`translate` は新規注釈を作りません。
-6. `translate` は `ANN_PENDING_TRANSLATION_TAG` が付いた annotation だけを翻訳対象にします。`ANN_TRANSLATED_TAG`（既定 `za:translated`）が付いた annotation は再翻訳しません。
-7. annotation 本文更新が成功した場合のみ、同じ更新で `ANN_PENDING_TRANSLATION_TAG` を外し、`ANN_TRANSLATED_TAG` を付けます。
-8. `translate --write` の結果、item 内に pending annotation が残っていなければ、item から `Z_BASE_DONE_TAG` が外れ、`Z_DONE_TAG`（既定 `translated`）が付きます。
-9. `--read-only` では item / annotation のタグ更新は行いません。
+6. `translate` は `ANN_PENDING_TRANSLATION_TAG` が付いた注釈だけを翻訳対象にします。`ANN_TRANSLATED_TAG`（既定 `za:translated`）が付いた注釈は再翻訳しません。
+7. 注釈本文の更新が成功した場合のみ、同じ更新で `ANN_PENDING_TRANSLATION_TAG` を外し、`ANN_TRANSLATED_TAG` を付けます。
+8. `translate --write` の結果、item 内に `ANN_PENDING_TRANSLATION_TAG` が付いた注釈が残っていなければ、item から `Z_BASE_DONE_TAG` が外れ、`Z_DONE_TAG`（既定 `translated`）が付きます。
+9. `--read-only` では item / 注釈のタグ更新は行いません。
 
 代表コマンド:
 
@@ -72,7 +72,7 @@ item レベル:
 | `base --write` | `to-translate` から `base-done` へ進めます。 |
 | `translate --write` | `base-done` から `translated` へ進めます。 |
 
-annotation レベル:
+注釈レベル:
 
 | 実行 | 主な遷移 |
 | --- | --- |
@@ -83,6 +83,6 @@ annotation レベル:
 
 単一ノートを再翻訳したい場合:
 
-1. Zotero で対象 annotation の `ANN_TRANSLATED_TAG`（既定 `za:translated`）を外します。
-2. 同じ annotation に `ANN_PENDING_TRANSLATION_TAG`（既定 `za:translate`）を付けます。
+1. Zotero で対象注釈の `ANN_TRANSLATED_TAG`（既定 `za:translated`）を外します。
+2. 同じ注釈に `ANN_PENDING_TRANSLATION_TAG`（既定 `za:translate`）を付けます。
 3. `zotero-annotator translate --write --item-key ABCD1234` を再実行します。
