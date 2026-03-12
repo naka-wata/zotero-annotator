@@ -43,6 +43,14 @@ zotero-annotator translate --write --item-key ABCD1234
 ## ドキュメント
 
 迷ったら `セットアップ -> 設定 -> CLI リファレンス / 運用フロー` の順で見れば十分です。
+
+- セットアップ: [セットアップ](docs/setup.md)
+- 設定: [設定](docs/configuration.md)
+- CLI リファレンス: [CLI リファレンス](docs/cli.md)
+- 運用フロー: [運用フロー](docs/workflows.md)
+- ローカル LLM セットアップ: [ローカル LLM セットアップ](docs/local-llm.md)
+- 開発ガイド: [開発ガイド](docs/development.md)
+
 ## Third-party licensing note
 
 - 本リポジトリのソースコード自体は `LICENSE` に記載のとおり MIT License で提供します。
@@ -51,12 +59,3 @@ zotero-annotator translate --write --item-key ABCD1234
 - そのため、本リポジトリのコードを MIT で公開することと、依存ライブラリを含む形でアプリやサービスを配布・提供できるかは別問題です。
 - 配布または公開前に、各依存ライブラリのライセンス条件、著作権表示、NOTICE 要件を確認してください。
 - 必要に応じて法務確認または商用ライセンスの検討を行ってください。
-
-## Notes
-
-- セットアップ: [セットアップ](docs/setup.md)
-- 設定: [設定](docs/configuration.md)
-- CLI リファレンス: [CLI リファレンス](docs/cli.md)
-- 運用フロー: [運用フロー](docs/workflows.md)
-- ローカル LLM セットアップ: [ローカル LLM セットアップ](docs/local-llm.md)
-- 開発ガイド: [開発ガイド](docs/development.md)
