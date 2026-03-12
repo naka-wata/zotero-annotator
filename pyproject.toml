@@ -8,6 +8,7 @@ version = "0.1.0"
 description = "Automated Zotero PDF paragraph translation and annotation pipeline"
 authors = [{ name = "wataru nakamura (naka-wata)" }]
 readme = "README.md"
+license = { text = "MIT" }
 requires-python = ">=3.11"
 dependencies = [
   "defusedxml>=0.7",
