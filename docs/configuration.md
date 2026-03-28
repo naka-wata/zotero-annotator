@@ -89,7 +89,6 @@ OPENAI_MODEL=gpt-4o-mini
 
 | Key | Purpose |
 | --- | --- |
-| `LOCAL_LLM_API_KEY` | OpenAI 互換サーバーが API key を要求する場合に使います。 |
 | `LOCAL_LLM_TEMPERATURE` | 生成温度です。 |
 | `LOCAL_LLM_TOP_P` | `top_p` です。 |
 
