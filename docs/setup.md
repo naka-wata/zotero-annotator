@@ -36,7 +36,7 @@ cp .env.example .env
 設定後は仮想環境を有効化した状態で読み取り専用コマンドを 1 つ実行すると確認しやすいです。
 
 ```bash
-zotero-annotator search --max-items 1
+zotero-annotator search 
 ```
 
 新しい shell を開いた後は毎回 `source .venv/bin/activate` を実行してください。
