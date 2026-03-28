@@ -1,40 +1,48 @@
-# Zotero Annotator (PyMuPDF Beta)
+# Zotero Annotator
 
-Zotero の PDF から段落を抽出し、翻訳付きノート注釈を自動作成する CLI です。  
-この beta は **PyMuPDF 固定**で動作します（GROBID は使いません）。
+<p align="center">
+  <img src="https://img.shields.io/badge/status-experimental-orange.svg" alt="Status: Experimental">
+  <img src="https://img.shields.io/badge/integrates-Zotero-CC2936.svg" alt="Integrates: Zotero">
+  <img src="https://img.shields.io/badge/interface-CLI-1f2937.svg" alt="Interface: CLI">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-0f766e.svg" alt="License: MIT"></a>
+  <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/python-3.11%2B-3776AB.svg" alt="Python 3.11+"></a>
+  <a href="https://docs.astral.sh/uv/"><img src="https://img.shields.io/badge/package_manager-uv-5C4EE5.svg" alt="Package manager: uv"></a>
+    <img src="https://img.shields.io/badge/translation-DeepL%20%7C%20OpenAI%20API%20%7C%20Local%20LLM-2563eb.svg" alt="Translation: DeepL | OpenAI API | Local LLM">
+</p>
 
-## What it does
+<p align="center">
+  <strong>Zotero の PDF から、段落ごとの原文注釈と翻訳付きノートを自動生成する CLI。</strong><br>
+  研究メモ作成を、PDF と翻訳ツールの往復なしで進められます。
+</p>
 
-- `to-translate` タグ付き論文（または `--item-key` 指定）を処理
-- PDF から段落を抽出（PyMuPDF）
-- 翻訳（`deepl` / `chatgpt` / `local_llm`）
-- Zotero 注釈ノートを作成し、`para:<hash>` タグで重複防止
-- 完了後に対象タグを除去（通常フロー）
+## できること
 
-## Command roles
+- **Zotero 上で完結**: 原文段落と翻訳を同じ注釈に残せます。
+- **運用を選べる**: `run` で一括処理、`base -> translate` で確認を挟む運用を切り替えられます。
+- **再実行しやすい**: タグ運用で item と注釈の進捗を追えます。
 
-- `zotero-annotator run`: 常に翻訳ありで注釈を作成
-- `zotero-annotator base`: 翻訳なしで原文注釈を作成
-- `zotero-annotator translate`: 既存注釈を翻訳（新規作成なし）
+## ワークフロー
 
-タグ遷移の考え方:
+推奨ルートは `base -> translate` です。`base` が作る下書きを Zotero 上で確認してから翻訳を反映できます。
 
-- `run` は常に翻訳ありで完結するコマンドです。`base` / `translate` の段階運用とは役割が違います。
-- `base` の `--write` 実行で完了判定になった item は、`to-translate` が外れて `base-done` が付きます。
-- この切り替えは write 時かつ完了判定時のみで、dry-run では起きません。
-- `translate` の `--write` 実行が成功した item は、`base-done` が外れて `translated` が付きます。
-- この切り替えは write 時かつ成功時のみで、dry-run や失敗時には起きません。
+```mermaid
+flowchart LR
+    A["search<br/>対象 item を確認"] --> B["base<br/>原文注釈の下書きを作成"]
+    B --> C["Zotero 上で確認・手修正"]
+    C --> D["translate<br/>翻訳を反映"]
+    A --> E["run<br/>抽出から翻訳まで一括実行"]
+```
 
-## Requirements
+## クイックスタート
+
+### 前提
 
 - Python `3.11+`
-- Zotero API: `Z_SCOPE`, `Z_ID`, `Z_API_KEY`
-- 翻訳利用時:
-  - DeepL: `DEEPL_API_KEY`
-  - ChatGPT API: `OPENAI_API_KEY`, `OPENAI_MODEL`
-  - Local LLM (Ollama): 起動済みのローカル server, `LOCAL_LLM_BASE_URL`, `LOCAL_LLM_MODEL`（詳細は [LOCAL_LLM_SETUP.md](/Users/watarunakamura/Desktop/zotero-annotator/LOCAL_LLM_SETUP.md)）
+- `uv`
+- Zotero API の認証情報
+- 利用する翻訳プロバイダーの認証情報、または起動済みのローカル LLM
 
-## Setup
+### 1. セットアップ
 
 ```bash
 uv venv
@@ -43,158 +51,37 @@ source .venv/bin/activate
 cp .env.example .env
 ```
 
-`.env` ファイルを手動で作る場合は、プロジェクト直下に `.env` を作成して次を記入してください。
+`.env` の各項目は [設定](docs/configuration.md) を参照してください。初回セットアップ全体は [セットアップ](docs/setup.md)、`TRANSLATOR_PROVIDER=local_llm` を使う場合は [ローカル LLM セットアップ](docs/local-llm.md) を参照してください。
 
-```dotenv
-Z_SCOPE=user
-Z_ID=YOUR_ZOTERO_USER_OR_GROUP_ID
-Z_API_KEY=YOUR_ZOTERO_API_KEY
-TRANSLATOR_PROVIDER=deepl
-TARGET_LANG=JA
-DEEPL_API_KEY=YOUR_DEEPL_API_KEY
-```
-
-`.env` を編集して最低限以下を設定してください。
-
-- `Z_SCOPE`
-- `Z_ID`
-- `Z_API_KEY`
-- `TRANSLATOR_PROVIDER`（`deepl` / `chatgpt` / `local_llm`。`openai` も後方互換 alias として利用可）
-- `TARGET_LANG`
-
-翻訳 provider ごとの設定:
-
-- DeepL の必須 env: `DEEPL_API_KEY`
-- DeepL の任意 env: `DEEPL_API_URL`
-- ChatGPT の必須 env: `OPENAI_API_KEY`, `OPENAI_MODEL`
-- ChatGPT の任意 env: `OPENAI_BASE_URL`
-- Local LLM の必須 env: `LOCAL_LLM_BASE_URL`, `LOCAL_LLM_MODEL`
-- Local LLM の任意 env: `LOCAL_LLM_API_KEY`, `LOCAL_LLM_TEMPERATURE`, `LOCAL_LLM_TOP_P`
-- 共通の任意 env: `SOURCE_LANG`（未設定時は provider 側の自動判定）
-
-例:
-
-```dotenv
-# DeepL
-TRANSLATOR_PROVIDER=deepl
-DEEPL_API_KEY=YOUR_DEEPL_API_KEY
-
-# ChatGPT API
-TRANSLATOR_PROVIDER=chatgpt
-OPENAI_API_KEY=YOUR_OPENAI_API_KEY
-OPENAI_MODEL=gpt-4o-mini
-# Optional:
-# OPENAI_BASE_URL=https://api.openai.com/v1
-```
-
-Local LLM を使う場合の `.env` 例と Ollama の起動手順は [LOCAL_LLM_SETUP.md](/Users/watarunakamura/Desktop/zotero-annotator/LOCAL_LLM_SETUP.md) を参照してください。
-
-翻訳 prompt は [src/zotero_annotator/services/translators/prompts.py](/Users/watarunakamura/Desktop/zotero-annotator/src/zotero_annotator/services/translators/prompts.py) で管理しています。ChatGPT 系 backend でも local LLM 系 backend でも、ここで「翻訳文だけ返す」方針を共有する前提です。
-
-## Local LLM setup
-
-Local LLM (Ollama) を使う場合の詳細手順は [LOCAL_LLM_SETUP.md](/Users/watarunakamura/Desktop/zotero-annotator/LOCAL_LLM_SETUP.md) を参照してください。Docker 版と `macOS local` 版を分けて案内しており、macOS では通常 `Ollama app` / `ollama serve` を直接使う方が速いです。
-
-注釈タグ関連の既定値:
-
-- `ANN_PENDING_TRANSLATION_TAG=za:translate`: base で作成した未翻訳注釈を示す annotation-level タグ
-- `ANN_TRANSLATED_TAG=za:translated`: translate 済み注釈を示す annotation-level タグ
-
-## Quick start
-
-```bash
-zotero-annotator run --write --item-key ABCD1234
-zotero-annotator base --write --item-key ABCD1234
-zotero-annotator translate --write --item-key ABCD1234
-```
-
-## Search behavior
-
-`zotero-annotator search` は `Z_TARGET_TAG`（既定 `to-translate`）と `Z_BASE_DONE_TAG`（既定 `base-done`）を参照して対象 item を一覧表示します。
-
-- 対象タグ集合のルール:
-  - `--tag` 未指定: `Z_TARGET_TAG OR Z_BASE_DONE_TAG`
-  - `--tag` 指定: `Z_BASE_DONE_TAG OR (--tag で指定した全て)`
-
-例:
+### 2. 最初の 1 件を試す
 
 ```bash
 zotero-annotator search
-zotero-annotator search --tag A
-zotero-annotator search --tag A --tag B
+zotero-annotator base --item-key ABCD1234
 ```
 
-## Translate workflow
+## ドキュメント
 
-`translate` は `base` で作成済みの注釈を後段で翻訳するためのコマンドです。
+| やりたいこと | 読むページ |
+| --- | --- |
+| 初回セットアップを進める | [セットアップ](docs/setup.md) |
+| `.env` の意味を確認する | [設定](docs/configuration.md) |
+| CLI のオプションを調べる | [CLI リファレンス](docs/cli.md) |
+| 通常運用の流れを確認する | [運用フロー](docs/workflows.md) |
+| ローカル LLM を使う | [ローカル LLM セットアップ](docs/local-llm.md) |
+| 開発に参加する | [開発ガイド](docs/development.md) |
 
-1. `base` で原文ノート注釈を作成
-2. 必要なら Zotero 側で注釈内容を手修正
-3. `translate` で既存注釈本文を in-place 更新
+## ライセンス
 
-注釈タグの状態遷移:
+本リポジトリのソースコード自体は [MIT License](LICENSE) で提供します。
 
-1. `base --write` が新規ノート注釈を作成すると、各 annotation に `para:<hash>` と `ANN_PENDING_TRANSLATION_TAG`（既定 `za:translate`）が付きます。
-2. `translate` は `ANN_PENDING_TRANSLATION_TAG` が付いた annotation だけを翻訳対象にします。`para:<hash>` は互換性・重複管理用で、対象選別には使いません。
-3. `translate --write` で本文更新が成功した annotation は、同じ更新で `ANN_PENDING_TRANSLATION_TAG` を外し、`ANN_TRANSLATED_TAG`（既定 `za:translated`）を付けます。
+<details>
+  <summary>Third-party licensing note</summary>
 
-重要:
+- 依存ライブラリにはそれぞれ別のライセンスが適用されます。
+- 特に `pymupdf` は公式情報上、AGPL または Artifex の商用ライセンスで提供されています。
+- 本リポジトリのコードを MIT で公開することと、依存ライブラリを含む形でアプリやサービスを配布・提供できるかは別問題です。
+- 配布または公開前に、各依存ライブラリのライセンス条件、著作権表示、NOTICE 要件を確認してください。
+- 必要に応じて法務確認または商用ライセンスの検討を行ってください。
 
-- `translate` には `--tag` がありません。対象選択を単純化し、タグ運用の分岐を減らすためです。
-- `--item-key` を省略した場合は `Z_BASE_DONE_TAG`（既定: `base-done`）の item をまとめて処理します。
-- **`translate` は新規注釈を作成せず、既存注釈の本文（`annotationComment` / `note`）だけを更新します。**
-- 翻訳元は PyMuPDF の再抽出結果ではなく、Zotero 上の既存ノート本文（手修正済み）です。
-- `ANN_TRANSLATED_TAG` が付いた annotation は、pending が残っていても再翻訳しません。
-- `base --write` が完了判定になると、`to-translate` が外れて `base-done` が付きます。
-- `translate --write` が成功すると、`base-done` が外れて `translated` が付きます。
-
-例:
-
-```bash
-zotero-annotator base --write --item-key ABCD1234
-zotero-annotator translate --write --item-key ABCD1234
-zotero-annotator translate --write
-```
-
-運用上のタグ遷移:
-
-1. 開始時: `to-translate`
-2. `base --write` 完了後: `base-done`
-3. `translate --write` 成功後: `translated`
-
-単一ノートを再翻訳したい場合:
-
-1. Zotero で対象 annotation の `ANN_TRANSLATED_TAG`（既定 `za:translated`）を外す
-2. 同じ annotation に `ANN_PENDING_TRANSLATION_TAG`（既定 `za:translate`）を付け直す
-3. `zotero-annotator translate --write --item-key ABCD1234` を再実行する
-
-## Runtime parameters
-
-`.env` で変更できる主な抽出パラメータ:
-
-- `PARA_MIN_CHARS`, `PARA_MAX_CHARS`: 抽出する段落の文字数範囲
-- `PARA_MIN_MEDIAN_COORD_H`, `PARA_MIN_MEDIAN_COORD_H_AUTO_RATIO`: 小さすぎる文字段落を除外する閾値
-- `PARA_SKIP_ALGORITHMS`: アルゴリズム / 疑似コードの除外
-- `PARA_SKIP_CAPTIONS`: 図表キャプションの除外
-- `PARA_DROP_CITATIONS`: 文中引用番号の除去
-- `PARA_DROP_FOOTNOTE_MARKERS`: 脚注マーカーの除去
-- `PARA_SKIP_REFERENCES`: 参考文献セクションの除外
-- `PARA_SKIP_TABLE_LIKE`: 表本文っぽい段落の除外
-
-現時点でコード固定の主なパラメータ:
-
-- `PARA_CONNECTOR_MAX_CHARS=20`
-- `PARA_MATH_NEWLINES=1`
-- `PARA_STRIP_PLOT_AXIS_PREFIX=1`
-- `PARA_MERGE_SPLITS=1`
-- `PARA_FORMULA_PLACEHOLDER=[MATH]`
-- `RUN_MAX_PARAGRAPHS_PER_ITEM=100`
-- `RUN_REPAIR_BROKEN_ANNOTATIONS=1`
-- `RUN_DELETE_BROKEN_ANNOTATIONS=1`
-- `LOG_LEVEL=INFO`
-- `ANNOTATION_MODE=note`（通常コマンド。`dev annotate --annotation-mode` では上書き可）
-
-## Notes
-
-- `TRANSLATOR_PROVIDER=openai` は `chatgpt` の後方互換 alias として扱われます。
-- 代表コマンドと使い分けは [CLI.md](/Users/watarunakamura/Desktop/zotero-annotator/CLI.md) を参照してください。
+</details>

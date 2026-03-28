@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Literal, Optional, Sequence, Set
+from typing import Any, Dict, Iterator, List, Literal, Optional, Sequence, Set
 
 import httpx
 
@@ -86,6 +86,45 @@ def _build_paragraph_translation_input(
     )
 
 
+@dataclass
+class _ItemResolution:
+    """Single item resolved from an explicit key or tag iteration."""
+    item_key: str
+    item: Optional[Dict[str, Any]]
+    lookup_error: Optional[httpx.HTTPError]
+
+
+def _iter_target_items(
+    zotero: ZoteroClient,
+    *,
+    item_keys: Optional[Sequence[str]],
+    tag: str,
+    max_items: int,
+) -> Iterator[_ItemResolution]:
+    """Yield items either from explicit keys or by tag, up to max_items.
+
+    - item_keys: maintains insertion order, deduplicates, fetches each item.
+      Lookup failures are yielded with lookup_error set.
+    - tag: iterates Zotero items tagged with `tag`; no lookup failure possible.
+    """
+    if item_keys:
+        seen: Set[str] = set()
+        ordered_keys = [k for k in item_keys if k and not (k in seen or seen.add(k))]
+        for index, item_key in enumerate(ordered_keys):
+            if index >= max_items:
+                break
+            try:
+                item = zotero.get_item(item_key)
+                yield _ItemResolution(item_key=item_key, item=item, lookup_error=None)
+            except httpx.HTTPError as exc:
+                yield _ItemResolution(item_key=item_key, item=None, lookup_error=exc)
+    else:
+        for index, item in enumerate(zotero.iter_items_by_tag(tag=tag, limit_per_page=100)):
+            if index >= max_items:
+                break
+            yield _ItemResolution(item_key=item.get("key") or "", item=item, lookup_error=None)
+
+
 def run_translate_existing_notes(
     settings: CoreSettings,
     *,
@@ -112,56 +151,34 @@ def run_translate_existing_notes(
         library_id=settings.z_id,
     )
     results: List[TranslationItemResult] = []
+    tag = override_tag or settings.z_base_done_tag
     try:
-        if item_keys:
-            seen: Set[str] = set()
-            ordered_keys = [k for k in item_keys if k and not (k in seen or seen.add(k))]
-            for index, item_key in enumerate(ordered_keys):
-                if index >= max_items:
-                    break
-                try:
-                    item = zotero.get_item(item_key)
-                except httpx.HTTPError as exc:
-                    results.append(
-                        TranslationItemResult(
-                            item_key=item_key,
-                            title=item_key,
-                            pdf_key=None,
-                            annotations_total=0,
-                            annotations_targeted=0,
-                            annotations_processed=0,
-                            annotations_updated=0,
-                            skipped_reason=f"stage=fetch_item item_lookup_failed item_key={item_key}: {exc}",
-                        )
-                    )
-                    continue
+        for resolution in _iter_target_items(zotero, item_keys=item_keys, tag=tag, max_items=max_items):
+            if resolution.lookup_error is not None:
                 results.append(
-                    process_item_translate_existing_notes(
-                        settings,
-                        zotero=zotero,
-                        item=item,
-                        dry_run=dry_run,
-                        translator=translator,
-                        source_lang=source_lang,
-                        target_lang=target_lang,
+                    TranslationItemResult(
+                        item_key=resolution.item_key,
+                        title=resolution.item_key,
+                        pdf_key=None,
+                        annotations_total=0,
+                        annotations_targeted=0,
+                        annotations_processed=0,
+                        annotations_updated=0,
+                        skipped_reason=f"stage=fetch_item item_lookup_failed item_key={resolution.item_key}: {resolution.lookup_error}",
                     )
                 )
-        else:
-            tag = override_tag or settings.z_base_done_tag
-            for index, item in enumerate(zotero.iter_items_by_tag(tag=tag, limit_per_page=100)):
-                if index >= max_items:
-                    break
-                results.append(
-                    process_item_translate_existing_notes(
-                        settings,
-                        zotero=zotero,
-                        item=item,
-                        dry_run=dry_run,
-                        translator=translator,
-                        source_lang=source_lang,
-                        target_lang=target_lang,
-                    )
+                continue
+            results.append(
+                process_item_translate_existing_notes(
+                    settings,
+                    zotero=zotero,
+                    item=resolution.item,
+                    dry_run=dry_run,
+                    translator=translator,
+                    source_lang=source_lang,
+                    target_lang=target_lang,
                 )
+            )
     finally:
         zotero.close()
 
@@ -447,64 +464,38 @@ def run_no_translation(
         library_id=settings.z_id,
     )
     results: List[ItemResult] = []
+    tag = override_tag or settings.z_target_tag
     try:
-        if item_keys:
-            # Keep item-key order and skip duplicated keys (指定順を維持し重複キーを除外)
-            seen: Set[str] = set()
-            ordered_keys = [k for k in item_keys if k and not (k in seen or seen.add(k))]
-            for index, item_key in enumerate(ordered_keys):
-                if index >= max_items:
-                    break
-                try:
-                    item = zotero.get_item(item_key)
-                except httpx.HTTPError:
-                    results.append(
-                        ItemResult(
-                            item_key=item_key,
-                            title=item_key,
-                            pdf_key=None,
-                            paragraphs_total=0,
-                            paragraphs_skipped_duplicate=0,
-                            paragraphs_processed=0,
-                            annotations_planned=0,
-                            annotations_created=0,
-                            skipped_reason="item_lookup_failed",
-                        )
-                    )
-                    continue
+        for resolution in _iter_target_items(zotero, item_keys=item_keys, tag=tag, max_items=max_items):
+            if resolution.lookup_error is not None:
                 results.append(
-                    process_item_no_translation(
-                        settings,
-                        zotero=zotero,
-                        item=item,
-                        dry_run=dry_run,
-                        max_paragraphs=max_paragraphs_per_item,
-                        annotation_mode=annotation_mode,
-                        translator=translator,
-                        source_lang=source_lang,
-                        target_lang=target_lang,
-                        delete_broken_annotations=delete_broken_annotations,
+                    ItemResult(
+                        item_key=resolution.item_key,
+                        title=resolution.item_key,
+                        pdf_key=None,
+                        paragraphs_total=0,
+                        paragraphs_skipped_duplicate=0,
+                        paragraphs_processed=0,
+                        annotations_planned=0,
+                        annotations_created=0,
+                        skipped_reason="item_lookup_failed",
                     )
                 )
-        else:
-            tag = override_tag or settings.z_target_tag
-            for index, item in enumerate(zotero.iter_items_by_tag(tag=tag, limit_per_page=100)):
-                if index >= max_items:
-                    break
-                results.append(
-                    process_item_no_translation(
-                        settings,
-                        zotero=zotero,
-                        item=item,
-                        dry_run=dry_run,
-                        max_paragraphs=max_paragraphs_per_item,
-                        annotation_mode=annotation_mode,
-                        translator=translator,
-                        source_lang=source_lang,
-                        target_lang=target_lang,
-                        delete_broken_annotations=delete_broken_annotations,
-                    )
+                continue
+            results.append(
+                process_item_no_translation(
+                    settings,
+                    zotero=zotero,
+                    item=resolution.item,
+                    dry_run=dry_run,
+                    max_paragraphs=max_paragraphs_per_item,
+                    annotation_mode=annotation_mode,
+                    translator=translator,
+                    source_lang=source_lang,
+                    target_lang=target_lang,
+                    delete_broken_annotations=delete_broken_annotations,
                 )
+            )
     finally:
         zotero.close()
 
