@@ -19,3 +19,4 @@ coverage/
 .idea/
 .vscode/
 *.log
+not_add/

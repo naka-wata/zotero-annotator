@@ -1,3 +1,8 @@
-from zotero_annotator.services.translators.base import TranslationError, TranslationResult, Translator
+from zotero_annotator.services.translators.base import (
+    TranslationError,
+    TranslationInput,
+    TranslationResult,
+    Translator,
+)
 
-__all__ = ["Translator", "TranslationResult", "TranslationError"]
+__all__ = ["Translator", "TranslationInput", "TranslationResult", "TranslationError"]

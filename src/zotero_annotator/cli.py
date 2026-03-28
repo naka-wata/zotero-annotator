@@ -5,17 +5,23 @@ import json
 from hashlib import sha1
 import statistics
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 import httpx
 import typer
 from pydantic import ValidationError
 from rich.console import Console
+from rich.table import Table
 
 from zotero_annotator.clients.zotero import ZoteroClient
-from zotero_annotator.config import get_core_settings, get_translation_settings
-from zotero_annotator.pipeline import build_annotation_payload, run_no_translation
+from zotero_annotator.config import get_core_settings, get_translation_runtime
+from zotero_annotator.pipeline import (
+    build_annotation_payload,
+    run_no_translation,
+    run_translate_existing_notes,
+)
 from zotero_annotator.services.annotation_position import build_note_position
+from zotero_annotator.services.paragraphs import Paragraph
 from zotero_annotator.services.paragraph_extractor import extract_paragraphs_from_pdf_bytes
 from zotero_annotator.services.pdf_pages import get_pdf_page_sizes
 from zotero_annotator.services.pymupdf_paragraphs import ExtractionConfig as PyMuPDFExtractionConfig
@@ -24,8 +30,8 @@ from zotero_annotator.services.pymupdf_paragraphs import (
     extract_paragraphs_pymupdf_bytes,
     paragraphs_to_xml,
 )
+from zotero_annotator.services.translators.base import TranslationError, TranslationInput
 from zotero_annotator.services.translators.factory import build_translator
-from zotero_annotator.services.translators.base import TranslationError
 
 
 app = typer.Typer(add_completion=False)
@@ -34,6 +40,7 @@ app.add_typer(dev_app, name="dev")
 console = Console()
 
 _SOURCE_SNIPPET_CHARS = 10
+_SEARCH_TABLE_TRUNCATE_CHARS = 80
 
 
 def _build_source_snippet(text: str, *, chars: int) -> str:
@@ -55,10 +62,64 @@ def _maybe_append_source_snippet(*, translated: str, source: str, enabled: bool,
     return f"{translated}\n\nSRC: {snippet}"
 
 
+def _build_translation_input(
+    *,
+    current_paragraph: str,
+    source_lang: str,
+    target_lang: str,
+    previous_paragraph: str = "",
+    next_paragraph: str = "",
+) -> TranslationInput:
+    return TranslationInput(
+        previous_paragraph=previous_paragraph,
+        current_paragraph=current_paragraph,
+        next_paragraph=next_paragraph,
+        source_lang=source_lang,
+        target_lang=target_lang,
+    )
+
+
+def _build_paragraph_translation_input(
+    paragraphs: list[Paragraph],
+    index: int,
+    *,
+    source_lang: str,
+    target_lang: str,
+) -> TranslationInput:
+    previous_paragraph = paragraphs[index - 1].text if index > 0 else ""
+    next_paragraph = paragraphs[index + 1].text if index + 1 < len(paragraphs) else ""
+    return _build_translation_input(
+        previous_paragraph=previous_paragraph,
+        current_paragraph=paragraphs[index].text,
+        next_paragraph=next_paragraph,
+        source_lang=source_lang,
+        target_lang=target_lang,
+    )
+
+
+def _truncate_for_table(value: str, *, max_chars: int) -> str:
+    text = " ".join((value or "").split()).strip()
+    if not text:
+        return "-"
+    if len(text) <= max_chars:
+        return text
+    return f"{text[: max_chars - 1].rstrip()}…"
+
+
+def _search_sort_key(item_key: str, matched_tags_by_item_key: dict[str, list[str]], *, base_done_tag: str) -> tuple[int, str]:
+    matched_tags = matched_tags_by_item_key.get(item_key, [])
+    has_base_done = base_done_tag in matched_tags
+    return (0 if has_base_done else 1, item_key)
+
+
 # Search command to list target papers quickly (対象論文を確認する検索コマンド)
 @app.command()
 def search(
-    tag: Optional[str] = typer.Option(None, "--tag", help="Target tag override / 対象タグを上書き"),
+    tag: Optional[List[str]] = typer.Option(
+        None,
+        "--tag",
+        help="Target tag to OR with base tag (repeatable) / 対象タグをOR追加（複数指定可）",
+    ),
     max_items: int = typer.Option(20, "--max-items", help="Max items to display / 表示する最大件数"),
 ) -> None:
     """List items tagged in Zotero (タグ付き論文の一覧を表示する)."""
@@ -66,7 +127,19 @@ def search(
         raise typer.BadParameter("--max-items must be >= 1")
 
     settings = get_core_settings()
-    target_tag = tag or settings.z_target_tag
+    tags_to_search: list[str] = []
+
+    def append_tag_once(value: str) -> None:
+        if value and value not in tags_to_search:
+            tags_to_search.append(value)
+
+    if tag:
+        append_tag_once(settings.z_base_done_tag)
+        for specified_tag in tag:
+            append_tag_once(specified_tag)
+    else:
+        append_tag_once(settings.z_target_tag)
+        append_tag_once(settings.z_base_done_tag)
 
     zotero = ZoteroClient(
         base_url=settings.zotero_base_url,
@@ -75,53 +148,64 @@ def search(
         library_id=settings.z_id,
     )
     try:
-        count = 0
-        for item in zotero.iter_items_by_tag(tag=target_tag, limit_per_page=100):
-            count += 1
-            if count > max_items:
-                break
-            key = item.get("key") or ""
+        matched_tags_by_item_key: dict[str, list[str]] = {}
+        items_by_key: dict[str, dict] = {}
+        for target_tag in tags_to_search:
+            for item in zotero.iter_items_by_tag(tag=target_tag, limit_per_page=100):
+                key = item.get("key") or ""
+                if not key:
+                    continue
+                matched_tags = matched_tags_by_item_key.setdefault(key, [])
+                if target_tag not in matched_tags:
+                    matched_tags.append(target_tag)
+                if key not in items_by_key:
+                    items_by_key[key] = item
+
+        table = Table(show_header=True, header_style="bold")
+        table.add_column("#", justify="right", style="dim", no_wrap=True)
+        table.add_column("matched_tags", style="magenta")
+        table.add_column("item-key", style="cyan", no_wrap=True)
+        table.add_column("title", style="green")
+        table.add_column("tags", style="yellow")
+
+        sorted_items = sorted(
+            items_by_key.items(),
+            key=lambda pair: _search_sort_key(
+                pair[0],
+                matched_tags_by_item_key,
+                base_done_tag=settings.z_base_done_tag,
+            ),
+        )
+        displayed_items = sorted_items[:max_items]
+
+        for count, (key, item) in enumerate(displayed_items, start=1):
             title = (item.get("data") or {}).get("title") or ""
             tags = zotero.extract_tag_names(item)
             tags_text = ", ".join(tags) if tags else "-"
-            console.print(
-                f"{count:>2}. [bold cyan]item-key[/bold cyan] : [cyan]{key}[/cyan]  "
-                f"[bold green]title[/bold green] : [green]{title}[/green]  "
-                f"[bold yellow]tags[/bold yellow] : [yellow]{tags_text}[/yellow]"
+            matched_tags_text = ", ".join(matched_tags_by_item_key.get(key, [])) or "-"
+            table.add_row(
+                str(count),
+                matched_tags_text,
+                key,
+                _truncate_for_table(title, max_chars=_SEARCH_TABLE_TRUNCATE_CHARS),
+                _truncate_for_table(tags_text, max_chars=_SEARCH_TABLE_TRUNCATE_CHARS),
             )
-        console.print(f"[cyan]tag={target_tag} displayed={min(count, max_items)}[/cyan]")
+
+        console.print(table)
+        tags_text = " OR ".join(tags_to_search)
+        console.print(f"[cyan]tags={tags_text} displayed={len(displayed_items)}[/cyan]")
     finally:
         zotero.close()
 
 
 # Main run command for the annotation pipeline (アノテーション処理パイプラインの実行コマンド)
-@app.command()
-def run(
-    tag: Optional[str] = typer.Option(None, "--tag", help="Target tag override / 対象タグを上書き"),
-    item_keys: Optional[List[str]] = typer.Option(
-        None,
-        "--item-key",
-        help="Target item key (repeatable) / 対象item-key（複数指定可）",
-    ),
-    max_items: int = typer.Option(10, "--max-items", help="Max papers per run / 1回の最大論文数"),
-    read_only: bool = typer.Option(
-        False, "--read-only/--write", help="Do not write to Zotero / Zoteroに書き込まない"
-    ),
-    translate: bool = typer.Option(
-        True,
-        "--translate/--no-translate",
-        help="Translate before annotating / 注釈前に翻訳する",
-    ),
-    delete_broken: bool = typer.Option(
-        False,
-        "--delete-broken",
-        help="Delete broken annotations before processing / 処理前に壊れ注釈を削除する",
-    ),
-    keep_broken: bool = typer.Option(
-        False,
-        "--keep-broken",
-        help="Do not delete broken annotations (override env) / 壊れ注釈を削除しない",
-    ),
+def _validate_run_options(
+    *,
+    tag: Optional[str],
+    item_keys: Optional[List[str]],
+    max_items: int,
+    delete_broken: bool,
+    keep_broken: bool,
 ) -> None:
     # Validate numeric options (数値オプションのバリデーション)
     if max_items < 1:
@@ -131,17 +215,58 @@ def run(
     if delete_broken and keep_broken:
         raise typer.BadParameter("Specify at most one of --delete-broken or --keep-broken")
 
+
+def _build_translation_runtime(*, translate: bool) -> Tuple[Optional[object], str, str]:
+    if not translate:
+        return None, "", ""
+
+    translation_runtime = get_translation_runtime()
+    translator = build_translator()
+    return translator, translation_runtime.source_lang, translation_runtime.target_lang
+
+
+def _render_run_results(*, results: list[object], translate: bool) -> None:
+    # Print per-item summary (論文ごとの実行結果を表示)
+    for r in results:
+        if r.skipped_reason:
+            console.print(f"[yellow]SKIP[/yellow] {r.title} ({r.skipped_reason})")
+            continue
+        console.print(
+            f"[green]DONE[/green] {r.title} planned={r.annotations_planned} created={r.annotations_created} dup={r.paragraphs_skipped_duplicate}"
+        )
+        console.print(f"{r.title} の処理完了" if not translate else f"{r.title} の翻訳完了")
+        for w in (r.warnings or []):
+            console.print(f"[yellow]WARN[/yellow] {r.title} ({w})")
+
+
+def _run_annotations_command(
+    *,
+    tag: Optional[str],
+    item_keys: Optional[List[str]],
+    max_items: int,
+    read_only: bool,
+    translate: bool,
+    delete_broken: bool,
+    keep_broken: bool,
+) -> None:
     def fail(stage: str, detail: str) -> None:
         console.print(f"[red]ERROR[/red] {stage}: {detail}")
         raise typer.Exit(code=1)
+
+    _validate_run_options(
+        tag=tag,
+        item_keys=item_keys,
+        max_items=max_items,
+        delete_broken=delete_broken,
+        keep_broken=keep_broken,
+    )
 
     # Load runtime settings (.env から設定を読み込む)
     try:
         settings = get_core_settings()
         if settings.run_max_paragraphs_per_item < 1:
             raise typer.BadParameter("RUN_MAX_PARAGRAPHS_PER_ITEM must be >= 1")
-        tsettings = get_translation_settings() if translate else None
-        translator = build_translator() if translate else None
+        translator, source_lang, target_lang = _build_translation_runtime(translate=translate)
     except ValidationError as exc:
         fail("Invalid .env / environment variables", str(exc))
         return
@@ -149,8 +274,6 @@ def run(
         fail("Translator provider error", str(exc))
         return
 
-    source_lang = ((tsettings.source_lang or "").strip() if tsettings else "")
-    target_lang = (tsettings.target_lang if tsettings else "")
     do_delete_broken = delete_broken or (not keep_broken and settings.run_delete_broken_annotations)
 
     # Run no-translation pipeline (翻訳なしパイプラインを実行)
@@ -172,15 +295,143 @@ def run(
         fail("Pipeline crashed", str(exc))
         return
 
-    # Print per-item summary (論文ごとの実行結果を表示)
+    _render_run_results(results=results, translate=translate)
+
+
+@app.command()
+def run(
+    tag: Optional[str] = typer.Option(None, "--tag", help="Target tag override / 対象タグを上書き"),
+    item_keys: Optional[List[str]] = typer.Option(
+        None,
+        "--item-key",
+        help="Target item key (repeatable) / 対象item-key（複数指定可）",
+    ),
+    max_items: int = typer.Option(10, "--max-items", help="Max papers per run / 1回の最大論文数"),
+    read_only: bool = typer.Option(
+        False, "--read-only/--write", help="Do not write to Zotero / Zoteroに書き込まない"
+    ),
+    delete_broken: bool = typer.Option(
+        False,
+        "--delete-broken",
+        help="Delete broken annotations before processing / 処理前に壊れ注釈を削除する",
+    ),
+    keep_broken: bool = typer.Option(
+        False,
+        "--keep-broken",
+        help="Do not delete broken annotations (override env) / 壊れ注釈を削除しない",
+    ),
+) -> None:
+    """Run translation + annotation pipeline (翻訳込みで注釈を作成する)."""
+    _run_annotations_command(
+        tag=tag,
+        item_keys=item_keys,
+        max_items=max_items,
+        read_only=read_only,
+        translate=True,
+        delete_broken=delete_broken,
+        keep_broken=keep_broken,
+    )
+
+
+@app.command()
+def base(
+    tag: Optional[str] = typer.Option(None, "--tag", help="Target tag override / 対象タグを上書き"),
+    item_keys: Optional[List[str]] = typer.Option(
+        None,
+        "--item-key",
+        help="Target item key (repeatable) / 対象item-key（複数指定可）",
+    ),
+    max_items: int = typer.Option(10, "--max-items", help="Max papers per run / 1回の最大論文数"),
+    read_only: bool = typer.Option(
+        False, "--read-only/--write", help="Do not write to Zotero / Zoteroに書き込まない"
+    ),
+    delete_broken: bool = typer.Option(
+        False,
+        "--delete-broken",
+        help="Delete broken annotations before processing / 処理前に壊れ注釈を削除する",
+    ),
+    keep_broken: bool = typer.Option(
+        False,
+        "--keep-broken",
+        help="Do not delete broken annotations (override env) / 壊れ注釈を削除しない",
+    ),
+) -> None:
+    """Write base annotations without translation (翻訳なしで原文アノテーションを書き込む)."""
+    _run_annotations_command(
+        tag=tag,
+        item_keys=item_keys,
+        max_items=max_items,
+        read_only=read_only,
+        translate=False,
+        delete_broken=delete_broken,
+        keep_broken=keep_broken,
+    )
+
+
+@app.command()
+def translate(
+    item_keys: Optional[List[str]] = typer.Option(
+        None,
+        "--item-key",
+        help="Target item key (repeatable) / 対象item-key（複数指定可）",
+    ),
+    max_items: int = typer.Option(10, "--max-items", help="Max papers per run / 1回の最大論文数"),
+    read_only: bool = typer.Option(
+        False, "--read-only/--write", help="Do not write to Zotero / Zoteroに書き込まない"
+    ),
+) -> None:
+    """Translate existing annotation note bodies in-place (既存注釈本文をin-place翻訳更新する)."""
+    if max_items < 1:
+        raise typer.BadParameter("--max-items must be >= 1")
+
+    def fail(stage: str, detail: str) -> None:
+        console.print(f"[red]ERROR[/red] {stage}: {detail}")
+        raise typer.Exit(code=1)
+
+    try:
+        settings = get_core_settings()
+        translation_runtime = get_translation_runtime()
+        translator = build_translator()
+        source_lang = translation_runtime.source_lang
+        target_lang = translation_runtime.target_lang
+    except ValidationError as exc:
+        fail("Invalid .env / environment variables", str(exc))
+        return
+    except RuntimeError as exc:
+        fail("Translator provider error", str(exc))
+        return
+
+    try:
+        override_tag = None if item_keys else settings.z_base_done_tag
+        results = run_translate_existing_notes(
+            settings,
+            dry_run=read_only,
+            max_items=max_items,
+            translator=translator,
+            source_lang=source_lang,
+            target_lang=target_lang,
+            override_tag=override_tag,
+            item_keys=item_keys,
+        )
+    except Exception as exc:
+        fail("Pipeline crashed", str(exc))
+        return
+
+    console.print(
+        f"[cyan]translate[/cyan] mode={'read-only' if read_only else 'write'} items={len(results)}"
+    )
     for r in results:
         if r.skipped_reason:
             console.print(f"[yellow]SKIP[/yellow] {r.title} ({r.skipped_reason})")
             continue
         console.print(
-            f"[green]DONE[/green] {r.title} planned={r.annotations_planned} created={r.annotations_created} dup={r.paragraphs_skipped_duplicate}"
+            f"[green]DONE[/green] {r.title} total={r.annotations_total} targeted={r.annotations_targeted} "
+            f"processed={r.annotations_processed} updated={r.annotations_updated}"
         )
-        console.print(f"{r.title} の処理完了" if not translate else f"{r.title} の翻訳完了")
+        if read_only:
+            console.print(
+                f"[cyan]READ-ONLY[/cyan] {r.title} planned_updates={r.annotations_processed} updated=0"
+            )
         for w in (r.warnings or []):
             console.print(f"[yellow]WARN[/yellow] {r.title} ({w})")
 
@@ -276,12 +527,19 @@ def dev_annotate(
         source_text = p.text
         comment_text = source_text
         if translate:
-            tsettings = get_translation_settings()
+            translation_runtime = get_translation_runtime()
             translator = build_translator()
-            source_lang = (tsettings.source_lang or "").strip()
-            target_lang = tsettings.target_lang
+            source_lang = translation_runtime.source_lang
+            target_lang = translation_runtime.target_lang
             try:
-                comment_text = translator.translate(source_text, source_lang=source_lang, target_lang=target_lang).text
+                comment_text = translator.translate(
+                    _build_paragraph_translation_input(
+                        paragraphs,
+                        paragraph_index,
+                        source_lang=source_lang,
+                        target_lang=target_lang,
+                    )
+                ).text
                 comment_text = _maybe_append_source_snippet(
                     translated=comment_text,
                     source=source_text,
@@ -379,10 +637,10 @@ def dev_translate(
 
     # Load settings and create clients (設定読み込みとクライアント作成)
     settings = get_core_settings()
-    tsettings = get_translation_settings()
+    translation_runtime = get_translation_runtime()
     translator = build_translator()
-    source_lang = (tsettings.source_lang or "").strip()
-    target_lang = tsettings.target_lang
+    source_lang = translation_runtime.source_lang
+    target_lang = translation_runtime.target_lang
 
     zotero = ZoteroClient(
         base_url=settings.zotero_base_url,
@@ -435,7 +693,14 @@ def dev_translate(
 
         # Translate and print (翻訳して表示)
         try:
-            result = translator.translate(p.text, source_lang=source_lang, target_lang=target_lang)
+            result = translator.translate(
+                _build_paragraph_translation_input(
+                    paragraphs,
+                    paragraph_index,
+                    source_lang=source_lang,
+                    target_lang=target_lang,
+                )
+            )
         except TranslationError as exc:
             fail("Translation failed", f"kind={exc.kind} provider={exc.provider} status={exc.status_code} detail={exc}")
         console.print(
@@ -1059,12 +1324,18 @@ def dev_delete_broken_annotations(
 
 @dev_app.command("delete-all-annotations")
 def dev_delete_all_annotations(
-    item_key: str = typer.Option(..., "--item-key", help="Target item key / 対象アイテムキー"),
+    item_key: str = typer.Option(
+        ...,
+        "--item-key",
+        help="Target item key whose PDF annotations will be deleted / PDF注釈を全削除する対象item-key",
+    ),
     read_only: bool = typer.Option(
-        False, "--read-only/--write", help="Do not write to Zotero / Zoteroに書き込まない"
+        False,
+        "--read-only/--write",
+        help="Preview matching annotations without deleting / --writeでZotero上の対象PDF注釈を全削除",
     ),
 ) -> None:
-    """Delete all annotations for the PDF attachment (PDF添付の全注釈を削除する)."""
+    """Delete all PDF annotations for the target item (対象itemのPDF注釈を全削除する)."""
 
     def fail(stage: str, detail: str) -> None:
         console.print(f"[red]ERROR[/red] {stage}: {detail}")
