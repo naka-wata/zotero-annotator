@@ -138,13 +138,15 @@ Ollama の起動手順やモデル例は [ローカル LLM セットアップ](l
 
 以下は現在 `.env` では変更できません。
 
-- `PARA_CONNECTOR_MAX_CHARS`
-- `PARA_MATH_NEWLINES`
-- `PARA_STRIP_PLOT_AXIS_PREFIX`
-- `PARA_MERGE_SPLITS`
-- `PARA_FORMULA_PLACEHOLDER`
-- `RUN_MAX_PARAGRAPHS_PER_ITEM`
-- `RUN_REPAIR_BROKEN_ANNOTATIONS`
-- `RUN_DELETE_BROKEN_ANNOTATIONS`
-- `LOG_LEVEL`
-- `ANNOTATION_MODE`
+| Key | 固定値 | 備考 |
+| --- | --- | --- |
+| `PARA_CONNECTOR_MAX_CHARS` | `20` | |
+| `PARA_MATH_NEWLINES` | `1` | |
+| `PARA_STRIP_PLOT_AXIS_PREFIX` | `1` | |
+| `PARA_MERGE_SPLITS` | `1` | |
+| `PARA_FORMULA_PLACEHOLDER` | `[MATH]` | |
+| `RUN_MAX_PARAGRAPHS_PER_ITEM` | `100` | |
+| `RUN_REPAIR_BROKEN_ANNOTATIONS` | `1` | |
+| `RUN_DELETE_BROKEN_ANNOTATIONS` | `1` | |
+| `LOG_LEVEL` | `INFO` | |
+| `ANNOTATION_MODE` | `note` | `dev annotate --annotation-mode` では上書き可 |

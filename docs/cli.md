@@ -1,42 +1,21 @@
 # CLI リファレンス
 
-このドキュメントは現在の `zotero-annotator` CLI 実装に合わせた使い方メモです。  
-beta 版は **PyMuPDF 固定**で動作し、GROBID コマンドはありません。
-
-セットアップは [セットアップ](setup.md)、`.env` の各項目は [設定](configuration.md) を参照してください。通常運用の流れとタグ遷移は [運用フロー](workflows.md) を参照してください。通常運用の推奨ルートは `base -> translate` です。`dev` コマンドと開発向け補助情報は [開発ガイド](development.md) にまとめています。
+セットアップは [セットアップ](setup.md)、翻訳プロバイダーと `.env` の各項目は [設定](configuration.md) を参照してください。通常運用の流れとタグ遷移は [運用フロー](workflows.md) を参照してください。通常運用の推奨ルートは `base -> translate` です。`dev` コマンドと開発向け補助情報は [開発ガイド](development.md) にまとめています。
 
 ## 実行前提
+
+初回のみ:
 
 ```bash
 uv venv
 UV_LINK_MODE=copy uv sync --no-editable
-source .venv/bin/activate
 ```
 
-## 翻訳プロバイダー設定
+新しい shell を開くたびに:
 
-`.env` で `TRANSLATOR_PROVIDER` を切り替えます。
-
-- `TRANSLATOR_PROVIDER=deepl`: DeepL を使用
-- `TRANSLATOR_PROVIDER=chatgpt`: OpenAI / ChatGPT API を使用
-- `TRANSLATOR_PROVIDER=local_llm`: Ollama など OpenAI 互換ローカル LLM を使用
-- `TRANSLATOR_PROVIDER=openai`: `chatgpt` の後方互換エイリアス
-
-必須 env:
-
-- 共通: `TARGET_LANG`
-- DeepL: `DEEPL_API_KEY`
-- OpenAI / ChatGPT API: `OPENAI_API_KEY`, `OPENAI_MODEL`
-- ローカル LLM: `LOCAL_LLM_BASE_URL`, `LOCAL_LLM_MODEL`
-
-任意 env:
-
-- 共通: `SOURCE_LANG`
-- DeepL: `DEEPL_API_URL`
-- OpenAI / ChatGPT API: `OPENAI_BASE_URL`
-- ローカル LLM: `LOCAL_LLM_API_KEY`, `LOCAL_LLM_TEMPERATURE`, `LOCAL_LLM_TOP_P`
-
-ローカル LLM の詳細セットアップは [ローカル LLM セットアップ](local-llm.md) を参照してください。
+```bash
+source .venv/bin/activate
+```
 
 ## コマンド一覧
 
@@ -49,6 +28,7 @@ source .venv/bin/activate
 
 タグで Zotero item を一覧表示します。読み取り専用です。
 
+- 通常運用のタグの意味と流れは [運用フロー](workflows.md) を参照してください。
 - `search` は `Z_TARGET_TAG`（既定 `to-translate`）と `Z_BASE_DONE_TAG`（既定 `base-done`）を参照します。
 - `--tag` 未指定: `Z_TARGET_TAG OR Z_BASE_DONE_TAG`
 - `--tag` 指定: `Z_BASE_DONE_TAG OR (--tag で指定した全て)`
@@ -69,7 +49,7 @@ zotero-annotator search --tag to-translate --max-items 5
 - `--tag TEXT`: タグ指定実行
 - `--item-key TEXT`（複数可）: item 指定実行
 - `--max-items INTEGER`: 処理件数上限（既定 `10`）
-- `--read-only/--write`: 書き込み有無（既定 `--write`）
+- `--read-only`: Zotero へ書き込まず確認だけ行う
 - `--delete-broken`: 実行前に壊れ注釈を削除
 - `--keep-broken`: 壊れ注釈削除を抑止
 
@@ -78,12 +58,12 @@ zotero-annotator search --tag to-translate --max-items 5
 - `--tag` と `--item-key` は同時指定できません。
 - 壊れ注釈は `annotationSortIndex` / `annotationPageLabel` / `annotationPosition` の欠落注釈を指します。
 - 通常運用では `base -> translate` を推奨します。`run` は手修正を挟まない一括実行向けです。
-- 運用フローの使い分けは [運用フロー](workflows.md) を参照してください。
+- タグ運用の詳細は [運用フロー](workflows.md) を参照してください。
 
 代表コマンド:
 
 ```bash
-zotero-annotator run --write --item-key ABCD1234
+zotero-annotator run --item-key ABCD1234
 zotero-annotator run --tag to-translate --max-items 5
 ```
 
@@ -94,16 +74,17 @@ zotero-annotator run --tag to-translate --max-items 5
 - `--tag TEXT`: タグ指定実行
 - `--item-key TEXT`（複数可）: item 指定実行
 - `--max-items INTEGER`: 処理件数上限（既定 `10`）
-- `--read-only/--write`: 書き込み有無（既定 `--write`）
+- `--read-only`: Zotero へ書き込まず確認だけ行う
 - `--delete-broken`: 実行前に壊れ注釈を削除
 - `--keep-broken`: 壊れ注釈削除を抑止
+- `base` が作る注釈は段落抽出に依存する下書きです。`base` で作成した各アノテーションノートには CLI が `za:translate` を付けます。`translate` の前に Zotero 上で確認してください。
 - 通常運用の推奨ルートでは、このコマンドを先に実行します。
 - タグ遷移と `base -> translate` の流れは [運用フロー](workflows.md) を参照してください。
 
 代表コマンド:
 
 ```bash
-zotero-annotator base --write --item-key ABCD1234
+zotero-annotator base --item-key ABCD1234
 zotero-annotator base --tag to-translate --max-items 5
 ```
 
@@ -113,18 +94,19 @@ zotero-annotator base --tag to-translate --max-items 5
 
 - `--item-key TEXT`（複数可）: item 指定実行
 - `--max-items INTEGER`: 処理件数上限（既定 `10`）
-- `--read-only/--write`: 書き込み有無（既定 `--write`）
+- `--read-only`: Zotero へ書き込まず確認だけ行う
 
 仕様:
 
 - `translate` には `--tag` はありません。
 - `--item-key` 未指定時は `Z_BASE_DONE_TAG`（既定 `base-done`）付き item を一括処理します。
+- 翻訳対象は、`base` の後に `za:translate` が付いたアノテーションノートです。タグ運用の詳細は [運用フロー](workflows.md) を参照してください。
 - 通常運用の推奨ルートでは、`base` の後にこのコマンドを実行します。
 - タグ遷移、対象注釈の条件、再翻訳手順は [運用フロー](workflows.md) を参照してください。
 
 代表コマンド:
 
 ```bash
-zotero-annotator translate --write --item-key ABCD1234
-zotero-annotator translate --write
+zotero-annotator translate --item-key ABCD1234
+zotero-annotator translate
 ```

@@ -60,34 +60,6 @@
   - 対象 item の PDF 注釈を全件確認します。
   - `--write` で対象 PDF 配下の注釈を全削除します。
 
-## 実行時パラメータ
-
-`.env` で変更できるキー名と既定値は [../.env.example](../.env.example) が正本です。用途ごとの説明は [設定](configuration.md) を参照してください。
-
-### 主な可変パラメータ
-
-- `PARA_MIN_CHARS`, `PARA_MAX_CHARS`: 抽出する段落の文字数範囲
-- `PARA_MIN_MEDIAN_COORD_H`, `PARA_MIN_MEDIAN_COORD_H_AUTO_RATIO`: 小さすぎる文字段落を除外する閾値
-- `PARA_SKIP_ALGORITHMS`: アルゴリズム / 疑似コードの除外
-- `PARA_SKIP_CAPTIONS`: 図表キャプションの除外
-- `PARA_DROP_CITATIONS`: 文中引用番号の除去
-- `PARA_DROP_FOOTNOTE_MARKERS`: 脚注マーカーの除去
-- `PARA_SKIP_REFERENCES`: 参考文献セクションの除外
-- `PARA_SKIP_TABLE_LIKE`: 表本文っぽい段落の除外
-
-### コード固定の主なパラメータ
-
-- `PARA_CONNECTOR_MAX_CHARS=20`
-- `PARA_MATH_NEWLINES=1`
-- `PARA_STRIP_PLOT_AXIS_PREFIX=1`
-- `PARA_MERGE_SPLITS=1`
-- `PARA_FORMULA_PLACEHOLDER=[MATH]`
-- `RUN_MAX_PARAGRAPHS_PER_ITEM=100`
-- `RUN_REPAIR_BROKEN_ANNOTATIONS=1`
-- `RUN_DELETE_BROKEN_ANNOTATIONS=1`
-- `LOG_LEVEL=INFO`
-- `ANNOTATION_MODE=note` (`dev annotate --annotation-mode` では上書き可)
-
 ## 実装メモ
 
 - 翻訳プロンプトは [../src/zotero_annotator/services/translators/prompts.py](../src/zotero_annotator/services/translators/prompts.py) で管理しています。
