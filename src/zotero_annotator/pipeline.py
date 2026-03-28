@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import json
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Dict, Iterator, List, Literal, Optional, Sequence, Set
 
 import httpx
 
 from zotero_annotator.clients.zotero import ZoteroClient
 from zotero_annotator.config import CoreSettings
+from zotero_annotator.models.results import ItemResult, TranslationItemResult
 from zotero_annotator.services.annotation_position import build_note_position
 from zotero_annotator.services.paragraphs import Paragraph
 from zotero_annotator.services.paragraph_extractor import extract_paragraphs_from_pdf_bytes
@@ -17,38 +18,6 @@ from zotero_annotator.services.translators.base import TranslationError, Transla
 
 
 AnnotationMode = Literal["note", "highlight"]
-
-
-@dataclass
-class ItemResult:
-    item_key: str
-    title: str
-    pdf_key: Optional[str]
-
-    paragraphs_total: int
-    paragraphs_skipped_duplicate: int
-    paragraphs_processed: int
-
-    annotations_planned: int
-    annotations_created: int
-
-    skipped_reason: Optional[str] = None
-    warnings: List[str] = field(default_factory=list)
-
-
-@dataclass
-class TranslationItemResult:
-    item_key: str
-    title: str
-    pdf_key: Optional[str]
-
-    annotations_total: int
-    annotations_targeted: int
-    annotations_processed: int
-    annotations_updated: int
-
-    skipped_reason: Optional[str] = None
-    warnings: List[str] = field(default_factory=list)
 
 
 def _build_translation_input(

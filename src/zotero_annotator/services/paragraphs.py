@@ -8,6 +8,8 @@ from typing import List, Literal, Optional, Union
 
 from defusedxml import ElementTree as ET
 
+from zotero_annotator.utils.text import merge_leading_continuations, normalize_text
+
 
 # Data class for paragraph coordinates (段落の座標を表すデータクラス)
 @dataclass
@@ -45,15 +47,8 @@ class _ParagraphEntry:
     coords: List[ParagraphCoord]
     page: Optional[int]
 
-# Normalize whitespace for stable hashing/dedup (空白を正規化して重複判定を安定化)
-def _normalize_text(text: str) -> str:
-    return " ".join(text.split()).strip()
-
-
 _CAPTION_START_RE = re.compile(r"^[^A-Za-z0-9]*(Figure|Fig\.|Table|Tab\.)\s*\d+\s*:", re.IGNORECASE)
 _CAPTION_BODY_SPLIT_RE = re.compile(r"\.\s+([a-z])")
-_LEADING_CONTINUATION_RE = re.compile(r"^([a-z]|[,\)\]])")
-_SENTENCE_END_RE = re.compile(r'[.!?][\"\'\)\]]*\s*$')
 
 
 def _strip_or_drop_caption(text: str) -> Optional[str]:
@@ -78,62 +73,6 @@ def _strip_or_drop_caption(text: str) -> Optional[str]:
     return tail or None
 
 
-def _merge_leading_continuations(paragraphs: List[Paragraph]) -> List[Paragraph]:
-    """
-    Merge paragraphs that look like a continuation of the previous paragraph.
-
-    Trigger:
-      - current paragraph starts with a lowercase letter, or one of: , ) ]
-    Guard:
-      - do NOT merge if previous paragraph ends with a clear sentence terminator: . ? !
-      - do NOT merge across known different pages
-    """
-    if not paragraphs:
-        return paragraphs
-
-    out: List[Paragraph] = []
-    for p in paragraphs:
-        if not out:
-            out.append(p)
-            continue
-
-        prev = out[-1]
-        cur_text = (p.text or "").lstrip()
-        prev_text = (prev.text or "").rstrip()
-
-        # Allow merge within the same page, and also across a page break if the previous paragraph
-        # appears to end on the page right before the current paragraph starts.
-        can_merge_across_pages = True
-        if prev.coords and p.coords:
-            prev_end_page = max(c.page for c in prev.coords)
-            cur_start_page = min(c.page for c in p.coords)
-            if not (cur_start_page == prev_end_page or cur_start_page == prev_end_page + 1):
-                can_merge_across_pages = False
-        else:
-            # Fallback to coarse page attribute when coords are missing.
-            if prev.page is not None and p.page is not None and prev.page != p.page:
-                can_merge_across_pages = False
-
-        should_try_merge = bool(_LEADING_CONTINUATION_RE.match(cur_text))
-        prev_ends_sentence = bool(_SENTENCE_END_RE.search(prev_text))
-
-        if can_merge_across_pages and should_try_merge and not prev_ends_sentence:
-            merged_text = _normalize_text(f"{prev_text} {cur_text}")
-            merged_coords = [*prev.coords, *p.coords]
-            merged_dedup_hashes = [*(prev.dedup_hashes or [prev.hash]), *(p.dedup_hashes or [p.hash])]
-            merged_hash = merged_dedup_hashes[0] if merged_dedup_hashes else prev.hash
-            out[-1] = Paragraph(
-                text=merged_text,
-                hash=merged_hash,
-                dedup_hashes=merged_dedup_hashes,
-                coords=merged_coords,
-                page=prev.page if prev.page is not None else p.page,
-            )
-            continue
-
-        out.append(p)
-
-    return out
 
 # SHA1 hash computation function (SHA1ハッシュ計算関数(重複判定タグ))
 def _sha1(text: str) -> str:
@@ -226,13 +165,13 @@ def _render_formula_text_or_token(
     label_text = ""
     for g in formula_elem.iter():
         if _local_name(g.tag) == "label":
-            label_text = _normalize_text("".join(g.itertext()))
+            label_text = normalize_text("".join(g.itertext()))
             break
 
     if label_text:
         return f"{formula_placeholder} {label_text}"
 
-    raw = _normalize_text("".join(formula_elem.itertext()))
+    raw = normalize_text("".join(formula_elem.itertext()))
     if not raw:
         return formula_placeholder
     if max_formula_chars > 0 and len(raw) > max_formula_chars:
@@ -334,7 +273,7 @@ def _is_connector_paragraph_v2(
     connector_max_chars: int,
     formula_placeholder: str,
 ) -> Optional[str]:
-    t0 = _strip_trailing_punct(_normalize_text(text))
+    t0 = _strip_trailing_punct(normalize_text(text))
     t = _strip_leading_formula_tokens(t0, formula_placeholder=formula_placeholder)
     t = _strip_trailing_punct(t)
     if not t:
@@ -398,7 +337,7 @@ def _merge_connector_entries(
         if i + 1 < len(entries):
             nxt = entries[i + 1]
             if token == "where":
-                nxt.display_text = _normalize_text(f"{cur.display_text} {nxt.display_text}")
+                nxt.display_text = normalize_text(f"{cur.display_text} {nxt.display_text}")
                 i += 1
                 continue
             if token == "Where":
@@ -408,7 +347,7 @@ def _merge_connector_entries(
                     nxt.display_text,
                     formula_placeholder=formula_placeholder,
                 ):
-                    nxt.display_text = _normalize_text(f"{cur.display_text} {nxt.display_text}")
+                    nxt.display_text = normalize_text(f"{cur.display_text} {nxt.display_text}")
                     i += 1
                     continue
 
@@ -457,7 +396,7 @@ def _filter_algorithm_entries(
     )
 
     def is_pseudocode_like(text: str) -> bool:
-        t = _normalize_text(text)
+        t = normalize_text(text)
         if not t:
             return False
         lower = t.lower()
@@ -498,7 +437,7 @@ def _filter_algorithm_entries(
             out.append(
                 _ParagraphEntry(
                     legacy_text=e.legacy_text,
-                    display_text=_normalize_text(tail),
+                    display_text=normalize_text(tail),
                     coords=e.coords,
                     page=e.page,
                 )
@@ -584,7 +523,7 @@ def _strip_plot_axis_prefix(text: str) -> str:
     if not looks_like_axis:
         return t
 
-    return _normalize_text(rest)
+    return normalize_text(rest)
 
 
 def _should_merge(
@@ -647,7 +586,7 @@ def _merge_paragraphs(paragraphs: List[Paragraph], *, formula_placeholder: str) 
     for nxt in paragraphs[1:]:
         if can_merge_pages(current, nxt):
             if _should_merge(current.text, nxt.text, formula_placeholder=formula_placeholder):
-                combined_text = _normalize_text(f"{current.text} {nxt.text}")
+                combined_text = normalize_text(f"{current.text} {nxt.text}")
                 combined_coords = list(current.coords) + list(nxt.coords)
                 combined_hashes = list(current.dedup_hashes) + [
                     h for h in nxt.dedup_hashes if h not in current.dedup_hashes
@@ -752,7 +691,7 @@ def _estimate_coord_h_threshold_from_root(
         if mh is None:
             continue
 
-        display_text = _normalize_text(_render_p_text(e, formula_placeholder=formula_placeholder))
+        display_text = normalize_text(_render_p_text(e, formula_placeholder=formula_placeholder))
         if len(display_text) < min_chars:
             continue
 
@@ -808,10 +747,10 @@ def extract_paragraphs(
 
     entries: List[_ParagraphEntry] = []
     for elem, prefix_tokens in _iter_p_with_prefix_tokens(root, formula_placeholder=formula_placeholder):
-        legacy_text = _normalize_text("".join(elem.itertext()))
-        display_text = _normalize_text(_render_p_text(elem, formula_placeholder=formula_placeholder))
+        legacy_text = normalize_text("".join(elem.itertext()))
+        display_text = normalize_text(_render_p_text(elem, formula_placeholder=formula_placeholder))
         if prefix_tokens:
-            display_text = _normalize_text(" ".join([*prefix_tokens, display_text]))
+            display_text = normalize_text(" ".join([*prefix_tokens, display_text]))
         coords_str = _find_coords_attr(elem)
         coords = _parse_coords(coords_str) if coords_str else []
         page = coords[0].page if coords else None
@@ -887,7 +826,7 @@ def extract_paragraphs(
             )
         )
 
-    paragraphs_raw = _merge_leading_continuations(paragraphs_raw)
+    paragraphs_raw = merge_leading_continuations(paragraphs_raw)
 
     paragraphs: List[Paragraph] = []
     for p in paragraphs_raw:
