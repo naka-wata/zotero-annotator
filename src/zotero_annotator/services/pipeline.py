@@ -620,6 +620,85 @@ def _build_annotation_payloads(
     return planned_payloads
 
 
+def _run_self_healing(
+    pdf_key: str,
+    zotero: ZoteroClient,
+    settings: CoreSettings,
+    paragraphs: list[Paragraph],
+    page_sizes: Dict[int, tuple[float, float]] | None,
+    existing_tags: Set[str],
+    *,
+    dry_run: bool,
+    delete_broken_annotations: bool,
+    item_key: str,
+    title: str,
+) -> list[str] | ItemResult:
+    """壊れた注釈の修復・削除を行い、warnings を返す。
+
+    dry_run=True のときは何もしない。
+    existing_tags は broken_total > 0 のとき in-place で更新される。
+    修復・削除後の再取得に失敗した場合は ItemResult を返す。
+    """
+    if dry_run:
+        return []
+
+    warnings: list[str] = []
+
+    try:
+        broken_total, broken_para_tagged = count_broken_annotations(zotero, pdf_key, dedup_prefix=settings.dedup_tag_prefix)
+    except httpx.HTTPError as exc:
+        warnings.append(f"count_broken_annotations_failed: {exc}")
+        broken_total, broken_para_tagged = 0, 0
+
+    if broken_total:
+        warnings.append(f"broken_annotations_detected total={broken_total} para_tagged={broken_para_tagged}")
+
+    if settings.run_repair_broken_annotations and broken_para_tagged:
+        try:
+            repaired, repair_warnings = repair_broken_annotations_for_pdf(
+                zotero,
+                pdf_key,
+                paragraphs=paragraphs,
+                dedup_prefix=settings.dedup_tag_prefix,
+                page_sizes=page_sizes,
+            )
+            if repaired:
+                warnings.append(f"repaired_broken_annotations={repaired}")
+            warnings.extend(repair_warnings)
+        except httpx.HTTPError as exc:
+            warnings.append(f"repair_broken_annotations_failed: {exc}")
+
+    if delete_broken_annotations and broken_total:
+        try:
+            deleted, delete_warnings = delete_broken_annotations_for_pdf(zotero, pdf_key)
+            if deleted:
+                warnings.append(f"deleted_broken_annotations={deleted}")
+            warnings.extend(delete_warnings)
+        except httpx.HTTPError as exc:
+            warnings.append(f"delete_broken_annotations_failed: {exc}")
+
+    # Refresh after repair/delete to avoid dedup mismatches.
+    if broken_total:
+        try:
+            refreshed = collect_existing_tags(zotero, pdf_key)
+            existing_tags.clear()
+            existing_tags.update(refreshed)
+        except httpx.HTTPError as exc:
+            return ItemResult(
+                item_key=item_key,
+                title=title,
+                pdf_key=pdf_key,
+                paragraphs_total=len(paragraphs),
+                paragraphs_skipped_duplicate=0,
+                paragraphs_processed=0,
+                annotations_planned=0,
+                annotations_created=0,
+                skipped_reason=f"list_annotations_failed_after_repair_delete: {exc}",
+            )
+
+    return warnings
+
+
 def process_item_no_translation(
     settings: CoreSettings,
     *,
@@ -661,56 +740,21 @@ def process_item_no_translation(
     paragraphs, existing_tags = extract_result
 
     # Self-healing step: repair/delete broken annotations before creating new ones.
-    if not dry_run:
-        try:
-            broken_total, broken_para_tagged = count_broken_annotations(zotero, pdf_key, dedup_prefix=settings.dedup_tag_prefix)
-        except httpx.HTTPError as exc:
-            warnings.append(f"count_broken_annotations_failed: {exc}")
-            broken_total, broken_para_tagged = 0, 0
-
-        if broken_total:
-            warnings.append(f"broken_annotations_detected total={broken_total} para_tagged={broken_para_tagged}")
-
-        if settings.run_repair_broken_annotations and broken_para_tagged:
-            try:
-                repaired, repair_warnings = repair_broken_annotations_for_pdf(
-                    zotero,
-                    pdf_key,
-                    paragraphs=paragraphs,
-                    dedup_prefix=settings.dedup_tag_prefix,
-                    page_sizes=page_sizes,
-                )
-                if repaired:
-                    warnings.append(f"repaired_broken_annotations={repaired}")
-                warnings.extend(repair_warnings)
-            except httpx.HTTPError as exc:
-                warnings.append(f"repair_broken_annotations_failed: {exc}")
-
-        if delete_broken_annotations and broken_total:
-            try:
-                deleted, delete_warnings = delete_broken_annotations_for_pdf(zotero, pdf_key)
-                if deleted:
-                    warnings.append(f"deleted_broken_annotations={deleted}")
-                warnings.extend(delete_warnings)
-            except httpx.HTTPError as exc:
-                warnings.append(f"delete_broken_annotations_failed: {exc}")
-
-        # Refresh after repair/delete to avoid dedup mismatches.
-        if broken_total:
-            try:
-                existing_tags = collect_existing_tags(zotero, pdf_key)
-            except httpx.HTTPError as exc:
-                return ItemResult(
-                    item_key=item_key,
-                    title=title,
-                    pdf_key=pdf_key,
-                    paragraphs_total=len(paragraphs),
-                    paragraphs_skipped_duplicate=0,
-                    paragraphs_processed=0,
-                    annotations_planned=0,
-                    annotations_created=0,
-                    skipped_reason=f"list_annotations_failed_after_repair_delete: {exc}",
-                )
+    heal_result = _run_self_healing(
+        pdf_key,
+        zotero,
+        settings,
+        paragraphs,
+        page_sizes,
+        existing_tags,
+        dry_run=dry_run,
+        delete_broken_annotations=delete_broken_annotations,
+        item_key=item_key,
+        title=title,
+    )
+    if isinstance(heal_result, ItemResult):
+        return heal_result
+    warnings.extend(heal_result)
 
     build_result = _build_annotation_payloads(
         paragraphs,
