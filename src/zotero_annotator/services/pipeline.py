@@ -9,7 +9,12 @@ import httpx
 
 from zotero_annotator.clients.zotero import ZoteroClient
 from zotero_annotator.config import CoreSettings
-from zotero_annotator.models.results import ItemResult, TranslationItemResult
+from zotero_annotator.models.results import (
+    ItemResult,
+    TranslationItemResult,
+    make_skipped_item_result,
+    make_skipped_translation_result,
+)
 from zotero_annotator.services.annotation_position import build_note_position
 from zotero_annotator.services.paragraphs import Paragraph
 from zotero_annotator.services.pymupdf_adapter import extract_paragraphs_from_pdf_bytes
@@ -94,6 +99,41 @@ def _iter_target_items(
             yield _ItemResolution(item_key=item.get("key") or "", item=item, lookup_error=None)
 
 
+def _fetch_item_and_pdf(
+    item_key: str,
+    item: Dict[str, Any],
+    zotero: ZoteroClient,
+) -> tuple[str, str] | ItemResult:
+    """item/PDF 取得の共通処理（children 取得・PDF 特定まで）。
+
+    成功時は (title, pdf_key) を返す。
+    失敗時はスキップ済み ItemResult を返す。
+    """
+    title = (item.get("data") or {}).get("title") or item_key
+
+    try:
+        children = zotero.list_children(item_key)
+    except httpx.HTTPError as exc:
+        return make_skipped_item_result(
+            item_key=item_key,
+            title=title,
+            pdf_key=None,
+            reason=f"children_fetch_failed: {exc}",
+        )
+
+    pdf = zotero.pick_pdf_attachment(children)
+    if not pdf:
+        return make_skipped_item_result(
+            item_key=item_key,
+            title=title,
+            pdf_key=None,
+            reason="no_pdf_attachment",
+        )
+
+    pdf_key = pdf.get("key") or ""
+    return (title, pdf_key)
+
+
 def run_translate_existing_notes(
     settings: CoreSettings,
     *,
@@ -165,37 +205,19 @@ def process_item_translate_existing_notes(
     target_lang: str,
 ) -> TranslationItemResult:
     item_key = item.get("key") or ""
-    title = (item.get("data") or {}).get("title") or item_key
     warnings: List[str] = []
 
-    try:
-        children = zotero.list_children(item_key)
-    except httpx.HTTPError as exc:
-        return TranslationItemResult(
-            item_key=item_key,
-            title=title,
-            pdf_key=None,
-            annotations_total=0,
-            annotations_targeted=0,
-            annotations_processed=0,
-            annotations_updated=0,
-            skipped_reason=f"stage=fetch_children children_fetch_failed item_key={item_key}: {exc}",
+    fetch_result = _fetch_item_and_pdf(item_key, item, zotero)
+    if isinstance(fetch_result, ItemResult):
+        skipped = fetch_result
+        return make_skipped_translation_result(
+            item_key=skipped.item_key,
+            title=skipped.title,
+            pdf_key=skipped.pdf_key,
+            reason=skipped.skipped_reason or "",
         )
+    title, pdf_key = fetch_result
 
-    pdf = zotero.pick_pdf_attachment(children)
-    if not pdf:
-        return TranslationItemResult(
-            item_key=item_key,
-            title=title,
-            pdf_key=None,
-            annotations_total=0,
-            annotations_targeted=0,
-            annotations_processed=0,
-            annotations_updated=0,
-            skipped_reason=f"stage=fetch_pdf no_pdf_attachment item_key={item_key}",
-        )
-
-    pdf_key = pdf.get("key") or ""
     try:
         annotations = list(zotero.iter_annotations(parent_key=pdf_key, limit_per_page=100))
     except httpx.HTTPError as exc:
@@ -485,53 +507,21 @@ def process_item_no_translation(
     delete_broken_annotations: bool,
 ) -> ItemResult:
     item_key = item.get("key") or ""
-    title = (item.get("data") or {}).get("title") or ""
     warnings: List[str] = []
 
-    try:
-        children = zotero.list_children(item_key)
-    except httpx.HTTPError as exc:
-        return ItemResult(
-            item_key=item_key,
-            title=title or item_key,
-            pdf_key=None,
-            paragraphs_total=0,
-            paragraphs_skipped_duplicate=0,
-            paragraphs_processed=0,
-            annotations_planned=0,
-            annotations_created=0,
-            skipped_reason=f"children_fetch_failed: {exc}",
-        )
-
-    pdf = zotero.pick_pdf_attachment(children)
-    if not pdf:
-        return ItemResult(
-            item_key=item_key,
-            title=title,
-            pdf_key=None,
-            paragraphs_total=0,
-            paragraphs_skipped_duplicate=0,
-            paragraphs_processed=0,
-            annotations_planned=0,
-            annotations_created=0,
-            skipped_reason="no_pdf_attachment",
-        )
-
-    pdf_key = pdf.get("key") or ""
+    fetch_result = _fetch_item_and_pdf(item_key, item, zotero)
+    if isinstance(fetch_result, ItemResult):
+        return fetch_result
+    title, pdf_key = fetch_result
 
     try:
         pdf_bytes = zotero.download_attachment(zotero.build_file_url(pdf_key))
     except httpx.HTTPError as exc:
-        return ItemResult(
+        return make_skipped_item_result(
             item_key=item_key,
             title=title,
             pdf_key=pdf_key,
-            paragraphs_total=0,
-            paragraphs_skipped_duplicate=0,
-            paragraphs_processed=0,
-            annotations_planned=0,
-            annotations_created=0,
-            skipped_reason=f"pdf_download_failed: {exc}",
+            reason=f"pdf_download_failed: {exc}",
         )
 
     page_sizes = get_pdf_page_sizes(pdf_bytes)
