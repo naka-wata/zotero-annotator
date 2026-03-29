@@ -15,7 +15,7 @@ from rich.table import Table
 
 from zotero_annotator.clients.zotero import ZoteroClient
 from zotero_annotator.config import get_core_settings, get_translation_runtime
-from zotero_annotator.pipeline import (
+from zotero_annotator.services.pipeline import (
     _build_paragraph_translation_input,
     build_annotation_payload,
     run_no_translation,
