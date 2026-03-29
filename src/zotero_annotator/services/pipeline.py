@@ -281,114 +281,36 @@ def process_item_translate_existing_notes(
             skipped_reason=f"stage=fetch_annotations list_annotations_failed item_key={item_key} pdf_key={pdf_key}: {exc}",
         )
 
-    targeted = 0
-    processed = 0
-    updated = 0
     write_enabled = not dry_run
-    skipped_non_pending = 0
-    skipped_already_translated = 0
-    targeted_missing_para_tag = 0
-    targeted_invalid_para_tag = 0
-    targeted_multiple_para_tags = 0
 
-    for ann in annotations:
-        ann_key = ann.get("key") or ""
-        version = ann.get("version")
-        data = dict(ann.get("data") or {})
-        tags = zotero.extract_tag_names(ann)
-        if settings.ann_translated_tag in tags:
-            skipped_already_translated += 1
-            continue
-        if settings.ann_pending_translation_tag not in tags:
-            skipped_non_pending += 1
-            continue
+    ann_warnings, ann_errors, stats = _translate_pending_annotations(
+        annotations=annotations,
+        translator=translator,
+        settings=settings,
+        write_enabled=write_enabled,
+        zotero=zotero,
+        item_key=item_key,
+        source_lang=source_lang,
+        target_lang=target_lang,
+    )
+    warnings.extend(ann_warnings)
 
-        para_tags, invalid_para_tags = _split_para_tags(
-            tags=tags,
-            dedup_prefix=settings.dedup_tag_prefix,
-        )
-        targeted += 1
-        if invalid_para_tags:
-            targeted_invalid_para_tag += 1
-        if not para_tags:
-            targeted_missing_para_tag += 1
-        if len(para_tags) > 1:
-            targeted_multiple_para_tags += 1
+    targeted = stats["targeted"]
+    processed = stats["processed"]
+    updated = stats["updated"]
 
-        body_field = _detect_annotation_body_field(data)
-        source_text = str(data.get(body_field) or "").strip()
-        if not source_text:
-            warnings.append(
-                f"stage=source empty_source item_key={item_key} annotation_key={ann_key} field={body_field}"
-            )
-            continue
-
-        try:
-            translated_text = translator.translate(
-                _build_translation_input(
-                    current_paragraph=source_text,
-                    source_lang=source_lang,
-                    target_lang=target_lang,
-                )
-            ).text
-        except TranslationError as exc:
-            return TranslationItemResult(
-                item_key=item_key,
-                title=title,
-                pdf_key=pdf_key,
-                annotations_total=len(annotations),
-                annotations_targeted=targeted,
-                annotations_processed=processed,
-                annotations_updated=updated,
-                skipped_reason=(
-                    f"stage=translate translation_failed item_key={item_key} annotation_key={ann_key} "
-                    f"kind={exc.kind} status={exc.status_code}: {exc}"
-                ),
-                warnings=warnings,
-            )
-        except Exception as exc:
-            return TranslationItemResult(
-                item_key=item_key,
-                title=title,
-                pdf_key=pdf_key,
-                annotations_total=len(annotations),
-                annotations_targeted=targeted,
-                annotations_processed=processed,
-                annotations_updated=updated,
-                skipped_reason=(
-                    f"stage=translate translation_unexpected_error item_key={item_key} annotation_key={ann_key}: {exc}"
-                ),
-                warnings=warnings,
-            )
-        processed += 1
-
-        updated_now, warning_message, error_message = _apply_translated_annotation_update(
-            zotero=zotero,
-            write_enabled=write_enabled,
+    if ann_errors:
+        return TranslationItemResult(
             item_key=item_key,
-            annotation_key=ann_key,
-            body_field=body_field,
-            annotation_data=data,
-            version=version,
-            translated_text=translated_text,
-            pending_tag=settings.ann_pending_translation_tag,
-            translated_tag=settings.ann_translated_tag,
+            title=title,
+            pdf_key=pdf_key,
+            annotations_total=len(annotations),
+            annotations_targeted=targeted,
+            annotations_processed=processed,
+            annotations_updated=updated,
+            skipped_reason=ann_errors[0],
+            warnings=warnings,
         )
-        if warning_message:
-            warnings.append(warning_message)
-        if error_message:
-            return TranslationItemResult(
-                item_key=item_key,
-                title=title,
-                pdf_key=pdf_key,
-                annotations_total=len(annotations),
-                annotations_targeted=targeted,
-                annotations_processed=processed,
-                annotations_updated=updated,
-                skipped_reason=error_message,
-                warnings=warnings,
-            )
-        updated += updated_now
 
     skipped_reason = None
     if targeted == 0:
@@ -396,25 +318,25 @@ def process_item_translate_existing_notes(
     elif processed == 0:
         skipped_reason = f"stage=source no_valid_translation_targets item_key={item_key} pdf_key={pdf_key}"
 
-    if skipped_already_translated:
+    if stats["skipped_already_translated"]:
         warnings.append(
-            f"stage=match skipped_already_translated count={skipped_already_translated}"
+            f"stage=match skipped_already_translated count={stats['skipped_already_translated']}"
         )
-    if skipped_non_pending:
+    if stats["skipped_non_pending"]:
         warnings.append(
-            f"stage=match skipped_without_pending_tag count={skipped_non_pending}"
+            f"stage=match skipped_without_pending_tag count={stats['skipped_non_pending']}"
         )
-    if targeted_missing_para_tag:
+    if stats["targeted_missing_para_tag"]:
         warnings.append(
-            f"stage=match targeted_missing_para_hash_tag count={targeted_missing_para_tag}"
+            f"stage=match targeted_missing_para_hash_tag count={stats['targeted_missing_para_tag']}"
         )
-    if targeted_invalid_para_tag:
+    if stats["targeted_invalid_para_tag"]:
         warnings.append(
-            f"stage=match targeted_invalid_para_tags count={targeted_invalid_para_tag}"
+            f"stage=match targeted_invalid_para_tags count={stats['targeted_invalid_para_tag']}"
         )
-    if targeted_multiple_para_tags:
+    if stats["targeted_multiple_para_tags"]:
         warnings.append(
-            f"stage=match targeted_multiple_para_tags count={targeted_multiple_para_tags}"
+            f"stage=match targeted_multiple_para_tags count={stats['targeted_multiple_para_tags']}"
         )
 
     if write_enabled:
@@ -449,6 +371,111 @@ def process_item_translate_existing_notes(
         skipped_reason=skipped_reason,
         warnings=warnings,
     )
+
+
+def _translate_pending_annotations(
+    annotations: list,
+    translator: Translator,
+    settings: CoreSettings,
+    *,
+    write_enabled: bool,
+    zotero: ZoteroClient,
+    item_key: str,
+    source_lang: str,
+    target_lang: str,
+) -> tuple[List[str], List[str], dict]:
+    """annotations をフィルタリングして翻訳を実行し (warnings, errors, stats) を返す。"""
+    warnings: List[str] = []
+    errors: List[str] = []
+    targeted = 0
+    processed = 0
+    updated = 0
+    skipped_non_pending = 0
+    skipped_already_translated = 0
+    targeted_missing_para_tag = 0
+    targeted_invalid_para_tag = 0
+    targeted_multiple_para_tags = 0
+
+    for ann in annotations:
+        ann_key = ann.get("key") or ""
+        version = ann.get("version")
+        data = dict(ann.get("data") or {})
+        tags = zotero.extract_tag_names(ann)
+        if settings.ann_translated_tag in tags:
+            skipped_already_translated += 1
+            continue
+        if settings.ann_pending_translation_tag not in tags:
+            skipped_non_pending += 1
+            continue
+
+        para_tags, invalid_para_tags = _split_para_tags(tags=tags, dedup_prefix=settings.dedup_tag_prefix)
+        targeted += 1
+        if invalid_para_tags:
+            targeted_invalid_para_tag += 1
+        if not para_tags:
+            targeted_missing_para_tag += 1
+        if len(para_tags) > 1:
+            targeted_multiple_para_tags += 1
+
+        body_field = _detect_annotation_body_field(data)
+        source_text = str(data.get(body_field) or "").strip()
+        if not source_text:
+            warnings.append(
+                f"stage=source empty_source item_key={item_key} annotation_key={ann_key} field={body_field}"
+            )
+            continue
+
+        try:
+            translated_text = translator.translate(
+                _build_translation_input(
+                    current_paragraph=source_text,
+                    source_lang=source_lang,
+                    target_lang=target_lang,
+                )
+            ).text
+        except TranslationError as exc:
+            errors.append(
+                f"stage=translate translation_failed item_key={item_key} annotation_key={ann_key} "
+                f"kind={exc.kind} status={exc.status_code}: {exc}"
+            )
+            break
+        except Exception as exc:
+            errors.append(
+                f"stage=translate translation_unexpected_error item_key={item_key} annotation_key={ann_key}: {exc}"
+            )
+            break
+        processed += 1
+
+        updated_now, warning_message, error_message = _apply_translated_annotation_update(
+            zotero=zotero,
+            write_enabled=write_enabled,
+            item_key=item_key,
+            annotation_key=ann_key,
+            body_field=body_field,
+            annotation_data=data,
+            version=version,
+            translated_text=translated_text,
+            pending_tag=settings.ann_pending_translation_tag,
+            translated_tag=settings.ann_translated_tag,
+        )
+        if warning_message:
+            warnings.append(warning_message)
+        if error_message:
+            errors.append(error_message)
+            break
+        updated += updated_now
+
+    stats = {
+        "targeted": targeted,
+        "processed": processed,
+        "updated": updated,
+        "skipped_non_pending": skipped_non_pending,
+        "skipped_already_translated": skipped_already_translated,
+        "targeted_missing_para_tag": targeted_missing_para_tag,
+        "targeted_invalid_para_tag": targeted_invalid_para_tag,
+        "targeted_multiple_para_tags": targeted_multiple_para_tags,
+    }
+    return warnings, errors, stats
 
 
 def _count_pending_annotations_for_translation(
