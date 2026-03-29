@@ -99,6 +99,55 @@ def _iter_target_items(
             yield _ItemResolution(item_key=item.get("key") or "", item=item, lookup_error=None)
 
 
+def _extract_paragraphs_from_pdf(
+    pdf_bytes: bytes,
+    pdf_key: str,
+    item_key: str,
+    title: str,
+    zotero: ZoteroClient,
+    settings: CoreSettings,
+) -> tuple[list[Paragraph], Set[str]] | ItemResult:
+    """段落抽出と既存タグ収集の共通処理。
+
+    成功時は (paragraphs, existing_tags) を返す。
+    失敗時はスキップ済み ItemResult を返す。
+    """
+    try:
+        paragraphs = extract_paragraphs_from_pdf_bytes(
+            pdf_bytes,
+            settings=settings,
+        )
+    except (httpx.HTTPError, ValueError, RuntimeError) as exc:
+        return ItemResult(
+            item_key=item_key,
+            title=title,
+            pdf_key=pdf_key,
+            paragraphs_total=0,
+            paragraphs_skipped_duplicate=0,
+            paragraphs_processed=0,
+            annotations_planned=0,
+            annotations_created=0,
+            skipped_reason=f"extract_failed: {exc}",
+        )
+
+    try:
+        existing_tags = collect_existing_tags(zotero, pdf_key)
+    except httpx.HTTPError as exc:
+        return ItemResult(
+            item_key=item_key,
+            title=title,
+            pdf_key=pdf_key,
+            paragraphs_total=len(paragraphs),
+            paragraphs_skipped_duplicate=0,
+            paragraphs_processed=0,
+            annotations_planned=0,
+            annotations_created=0,
+            skipped_reason=f"list_annotations_failed: {exc}",
+        )
+
+    return (paragraphs, existing_tags)
+
+
 def _fetch_item_and_pdf(
     item_key: str,
     item: Dict[str, Any],
@@ -526,50 +575,12 @@ def process_item_no_translation(
 
     page_sizes = get_pdf_page_sizes(pdf_bytes)
 
-    try:
-        paragraphs = extract_paragraphs_from_pdf_bytes(
-            pdf_bytes,
-            settings=settings,
-        )
-    except httpx.HTTPError as exc:
-        return ItemResult(
-            item_key=item_key,
-            title=title,
-            pdf_key=pdf_key,
-            paragraphs_total=0,
-            paragraphs_skipped_duplicate=0,
-            paragraphs_processed=0,
-            annotations_planned=0,
-            annotations_created=0,
-            skipped_reason=f"extract_failed: {exc}",
-        )
-    except (ValueError, RuntimeError) as exc:
-        return ItemResult(
-            item_key=item_key,
-            title=title,
-            pdf_key=pdf_key,
-            paragraphs_total=0,
-            paragraphs_skipped_duplicate=0,
-            paragraphs_processed=0,
-            annotations_planned=0,
-            annotations_created=0,
-            skipped_reason=f"extract_failed: {exc}",
-        )
-
-    try:
-        existing_tags = collect_existing_tags(zotero, pdf_key)
-    except httpx.HTTPError as exc:
-        return ItemResult(
-            item_key=item_key,
-            title=title,
-            pdf_key=pdf_key,
-            paragraphs_total=len(paragraphs),
-            paragraphs_skipped_duplicate=0,
-            paragraphs_processed=0,
-            annotations_planned=0,
-            annotations_created=0,
-            skipped_reason=f"list_annotations_failed: {exc}",
-        )
+    extract_result = _extract_paragraphs_from_pdf(
+        pdf_bytes, pdf_key, item_key, title, zotero, settings
+    )
+    if isinstance(extract_result, ItemResult):
+        return extract_result
+    paragraphs, existing_tags = extract_result
 
     # Self-healing step: repair/delete broken annotations before creating new ones.
     if not dry_run:
