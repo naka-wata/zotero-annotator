@@ -699,80 +699,23 @@ def _run_self_healing(
     return warnings
 
 
-def process_item_no_translation(
-    settings: CoreSettings,
-    *,
-    zotero: ZoteroClient,
+def _write_and_finalize(
+    planned_payloads: list[dict],
+    paragraphs: list[Paragraph],
+    item_key: str,
+    pdf_key: str,
+    title: str,
     item: Dict[str, Any],
-    dry_run: bool,
+    zotero: ZoteroClient,
+    settings: CoreSettings,
+    existing_tags: Set[str],
+    warnings: list[str],
+    *,
     max_paragraphs: int,
-    annotation_mode: AnnotationMode,
+    dry_run: bool,
     translator: Optional[Translator],
-    source_lang: str,
-    target_lang: str,
-    delete_broken_annotations: bool,
 ) -> ItemResult:
-    item_key = item.get("key") or ""
-    warnings: List[str] = []
-
-    fetch_result = _fetch_item_and_pdf(item_key, item, zotero)
-    if isinstance(fetch_result, ItemResult):
-        return fetch_result
-    title, pdf_key = fetch_result
-
-    try:
-        pdf_bytes = zotero.download_attachment(zotero.build_file_url(pdf_key))
-    except httpx.HTTPError as exc:
-        return make_skipped_item_result(
-            item_key=item_key,
-            title=title,
-            pdf_key=pdf_key,
-            reason=f"pdf_download_failed: {exc}",
-        )
-
-    page_sizes = get_pdf_page_sizes(pdf_bytes)
-
-    extract_result = _extract_paragraphs_from_pdf(
-        pdf_bytes, pdf_key, item_key, title, zotero, settings
-    )
-    if isinstance(extract_result, ItemResult):
-        return extract_result
-    paragraphs, existing_tags = extract_result
-
-    # Self-healing step: repair/delete broken annotations before creating new ones.
-    heal_result = _run_self_healing(
-        pdf_key,
-        zotero,
-        settings,
-        paragraphs,
-        page_sizes,
-        existing_tags,
-        dry_run=dry_run,
-        delete_broken_annotations=delete_broken_annotations,
-        item_key=item_key,
-        title=title,
-    )
-    if isinstance(heal_result, ItemResult):
-        return heal_result
-    warnings.extend(heal_result)
-
-    build_result = _build_annotation_payloads(
-        paragraphs,
-        existing_tags,
-        pdf_key,
-        translator,
-        settings,
-        item_key=item_key,
-        title=title,
-        source_lang=source_lang,
-        target_lang=target_lang,
-        annotation_mode=annotation_mode,
-        page_sizes=page_sizes,
-        max_paragraphs=max_paragraphs,
-    )
-    if isinstance(build_result, ItemResult):
-        return build_result
-    planned_payloads = build_result
+    """Zotero への書き込みとタグ自動確定を行い ItemResult を返す。"""
     processed = min(max_paragraphs, len(paragraphs))
     dup = processed - len(planned_payloads)
     planned_dedup_tags: Set[str] = {
@@ -803,27 +746,24 @@ def process_item_no_translation(
             )
 
     # Auto finalize tags only when all paragraphs are complete (全段落が完了した時だけタグを更新)
-    if not dry_run:
-        # If we intentionally limited processing, do not finalize (一部だけ処理するモードでは完了扱いにしない)
-        if max_paragraphs >= len(paragraphs):
-            required = {f"{settings.dedup_tag_prefix}{h}" for p in paragraphs for h in (p.dedup_hashes or [p.hash])}
-            available = set(existing_tags) | set(planned_dedup_tags)
-            all_done = required.issubset(available)
-            if all_done:
-                finalize_add_tag = settings.z_done_tag if translator is not None else settings.z_base_done_tag
-                finalize_remove_tags = [settings.z_remove_tag]
-                if translator is not None:
-                    finalize_remove_tags.append(settings.z_base_done_tag)
-                current = zotero.extract_tag_names(item)
-                next_tags = zotero.merge_tags(
-                    current=current,
-                    add=[finalize_add_tag],
-                    remove=finalize_remove_tags,
-                )
-                try:
-                    zotero.update_item_tags(item_key=item_key, tags=next_tags)
-                except httpx.HTTPError as exc:
-                    warnings.append(f"tag_update_failed: {exc}")
+    if not dry_run and max_paragraphs >= len(paragraphs):
+        required = {f"{settings.dedup_tag_prefix}{h}" for p in paragraphs for h in (p.dedup_hashes or [p.hash])}
+        available = set(existing_tags) | set(planned_dedup_tags)
+        if required.issubset(available):
+            finalize_add_tag = settings.z_done_tag if translator is not None else settings.z_base_done_tag
+            finalize_remove_tags = [settings.z_remove_tag]
+            if translator is not None:
+                finalize_remove_tags.append(settings.z_base_done_tag)
+            current = zotero.extract_tag_names(item)
+            next_tags = zotero.merge_tags(
+                current=current,
+                add=[finalize_add_tag],
+                remove=finalize_remove_tags,
+            )
+            try:
+                zotero.update_item_tags(item_key=item_key, tags=next_tags)
+            except httpx.HTTPError as exc:
+                warnings.append(f"tag_update_failed: {exc}")
 
     return ItemResult(
         item_key=item_key,
@@ -835,6 +775,69 @@ def process_item_no_translation(
         annotations_planned=len(planned_payloads),
         annotations_created=created,
         warnings=warnings,
+    )
+
+
+def process_item_no_translation(
+    settings: CoreSettings,
+    *,
+    zotero: ZoteroClient,
+    item: Dict[str, Any],
+    dry_run: bool,
+    max_paragraphs: int,
+    annotation_mode: AnnotationMode,
+    translator: Optional[Translator],
+    source_lang: str,
+    target_lang: str,
+    delete_broken_annotations: bool,
+) -> ItemResult:
+    item_key = item.get("key") or ""
+    warnings: List[str] = []
+
+    fetch_result = _fetch_item_and_pdf(item_key, item, zotero)
+    if isinstance(fetch_result, ItemResult):
+        return fetch_result
+    title, pdf_key = fetch_result
+
+    try:
+        pdf_bytes = zotero.download_attachment(zotero.build_file_url(pdf_key))
+    except httpx.HTTPError as exc:
+        return make_skipped_item_result(
+            item_key=item_key, title=title, pdf_key=pdf_key,
+            reason=f"pdf_download_failed: {exc}",
+        )
+
+    page_sizes = get_pdf_page_sizes(pdf_bytes)
+
+    extract_result = _extract_paragraphs_from_pdf(
+        pdf_bytes, pdf_key, item_key, title, zotero, settings
+    )
+    if isinstance(extract_result, ItemResult):
+        return extract_result
+    paragraphs, existing_tags = extract_result
+
+    heal_result = _run_self_healing(
+        pdf_key, zotero, settings, paragraphs, page_sizes, existing_tags,
+        dry_run=dry_run, delete_broken_annotations=delete_broken_annotations,
+        item_key=item_key, title=title,
+    )
+    if isinstance(heal_result, ItemResult):
+        return heal_result
+    warnings.extend(heal_result)
+
+    build_result = _build_annotation_payloads(
+        paragraphs, existing_tags, pdf_key, translator, settings,
+        item_key=item_key, title=title, source_lang=source_lang,
+        target_lang=target_lang, annotation_mode=annotation_mode,
+        page_sizes=page_sizes, max_paragraphs=max_paragraphs,
+    )
+    if isinstance(build_result, ItemResult):
+        return build_result
+
+    return _write_and_finalize(
+        build_result, paragraphs, item_key, pdf_key, title, item,
+        zotero, settings, existing_tags, warnings,
+        max_paragraphs=max_paragraphs, dry_run=dry_run, translator=translator,
     )
 
 
