@@ -12,7 +12,7 @@ from zotero_annotator.config import CoreSettings
 from zotero_annotator.models.results import ItemResult, TranslationItemResult
 from zotero_annotator.services.annotation_position import build_note_position
 from zotero_annotator.services.paragraphs import Paragraph
-from zotero_annotator.services.paragraph_extractor import extract_paragraphs_from_pdf_bytes
+from zotero_annotator.services.pymupdf_adapter import extract_paragraphs_from_pdf_bytes
 from zotero_annotator.services.pdf_pages import get_pdf_page_sizes
 from zotero_annotator.services.translators.base import TranslationError, TranslationInput, Translator
 
