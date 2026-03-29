@@ -542,6 +542,84 @@ def run_no_translation(
     return results
 
 
+def _build_annotation_payloads(
+    paragraphs: Sequence[Paragraph],
+    existing_tags: Set[str],
+    pdf_key: str,
+    translator: Optional[Translator],
+    settings: CoreSettings,
+    *,
+    item_key: str,
+    title: str,
+    source_lang: str,
+    target_lang: str,
+    annotation_mode: AnnotationMode,
+    page_sizes: Dict[int, tuple[float, float]] | None,
+    max_paragraphs: int,
+) -> List[Dict[str, Any]] | ItemResult:
+    """
+    Build annotation payloads for each paragraph.
+    Returns the list on success, or an ItemResult on translation error.
+    (段落ごとに注釈ペイロードを構築する。成功時はリスト、翻訳エラー時は ItemResult を返す)
+    """
+    planned_payloads: List[Dict[str, Any]] = []
+    dup = 0
+    processed = 0
+
+    for index, p in enumerate(paragraphs[:max_paragraphs]):
+        processed += 1
+        dedup_tags = [f"{settings.dedup_tag_prefix}{h}" for h in (p.dedup_hashes or [p.hash])]
+        if any(t in existing_tags for t in dedup_tags):
+            dup += 1
+            continue
+        source_text = p.text
+        comment_text = source_text
+        if translator is not None:
+            try:
+                comment_text = translator.translate(
+                    _build_paragraph_translation_input(
+                        paragraphs,
+                        index,
+                        source_lang=source_lang,
+                        target_lang=target_lang,
+                    )
+                ).text
+                comment_text = _maybe_append_source_snippet(
+                    translated=comment_text,
+                    source=source_text,
+                    enabled=True,
+                    chars=_SOURCE_SNIPPET_CHARS,
+                )
+            except TranslationError as exc:
+                # Avoid partial mixed-language annotations; treat translation errors as fatal for the item.
+                # (翻訳エラー時に中途半端に注釈を作らない)
+                return ItemResult(
+                    item_key=item_key,
+                    title=title,
+                    pdf_key=pdf_key,
+                    paragraphs_total=len(paragraphs),
+                    paragraphs_skipped_duplicate=dup,
+                    paragraphs_processed=processed,
+                    annotations_planned=0,
+                    annotations_created=0,
+                    skipped_reason=f"translation_failed(kind={exc.kind} status={exc.status_code}): {exc}",
+                )
+        annotation_extra_tags = [settings.ann_pending_translation_tag] if translator is None else []
+        planned_payloads.append(
+            build_annotation_payload(
+                paragraph=p,
+                comment_text=comment_text,
+                pdf_key=pdf_key,
+                dedup_tags=dedup_tags,
+                extra_tags=annotation_extra_tags,
+                annotation_mode=annotation_mode,
+                page_sizes=page_sizes,
+            )
+        )
+
+    return planned_payloads
+
+
 def process_item_no_translation(
     settings: CoreSettings,
     *,
@@ -634,62 +712,31 @@ def process_item_no_translation(
                     skipped_reason=f"list_annotations_failed_after_repair_delete: {exc}",
                 )
 
-    planned_payloads: List[Dict[str, Any]] = []
-    planned_dedup_tags: Set[str] = set()
-    dup = 0
-    processed = 0
-
-    for index, p in enumerate(paragraphs[:max_paragraphs]):
-        processed += 1
-        dedup_tags = [f"{settings.dedup_tag_prefix}{h}" for h in (p.dedup_hashes or [p.hash])]
-        if any(t in existing_tags for t in dedup_tags):
-            dup += 1
-            continue
-        source_text = p.text
-        comment_text = source_text
-        if translator is not None:
-            try:
-                comment_text = translator.translate(
-                    _build_paragraph_translation_input(
-                        paragraphs,
-                        index,
-                        source_lang=source_lang,
-                        target_lang=target_lang,
-                    )
-                ).text
-                comment_text = _maybe_append_source_snippet(
-                    translated=comment_text,
-                    source=source_text,
-                    enabled=True,
-                    chars=_SOURCE_SNIPPET_CHARS,
-                )
-            except TranslationError as exc:
-                # Avoid partial mixed-language annotations; treat translation errors as fatal for the item.
-                # (翻訳エラー時に中途半端に注釈を作らない)
-                return ItemResult(
-                    item_key=item_key,
-                    title=title,
-                    pdf_key=pdf_key,
-                    paragraphs_total=len(paragraphs),
-                    paragraphs_skipped_duplicate=dup,
-                    paragraphs_processed=processed,
-                    annotations_planned=0,
-                    annotations_created=0,
-                    skipped_reason=f"translation_failed(kind={exc.kind} status={exc.status_code}): {exc}",
-                )
-        annotation_extra_tags = [settings.ann_pending_translation_tag] if translator is None else []
-        planned_payloads.append(
-            build_annotation_payload(
-                paragraph=p,
-                comment_text=comment_text,
-                pdf_key=pdf_key,
-                dedup_tags=dedup_tags,
-                extra_tags=annotation_extra_tags,
-                annotation_mode=annotation_mode,
-                page_sizes=page_sizes,
-            )
-        )
-        planned_dedup_tags.update(dedup_tags)
+    build_result = _build_annotation_payloads(
+        paragraphs,
+        existing_tags,
+        pdf_key,
+        translator,
+        settings,
+        item_key=item_key,
+        title=title,
+        source_lang=source_lang,
+        target_lang=target_lang,
+        annotation_mode=annotation_mode,
+        page_sizes=page_sizes,
+        max_paragraphs=max_paragraphs,
+    )
+    if isinstance(build_result, ItemResult):
+        return build_result
+    planned_payloads = build_result
+    processed = min(max_paragraphs, len(paragraphs))
+    dup = processed - len(planned_payloads)
+    planned_dedup_tags: Set[str] = {
+        t["tag"]
+        for payload in planned_payloads
+        for t in payload.get("tags", [])
+        if t["tag"].startswith(settings.dedup_tag_prefix)
+    }
 
     created = 0
     if planned_payloads and not dry_run:
