@@ -16,13 +16,13 @@ from rich.table import Table
 from zotero_annotator.clients.zotero import ZoteroClient
 from zotero_annotator.config import get_core_settings, get_translation_runtime
 from zotero_annotator.pipeline import (
+    _build_paragraph_translation_input,
     build_annotation_payload,
     run_no_translation,
     run_translate_existing_notes,
 )
 from zotero_annotator.services.annotation_position import build_note_position
-from zotero_annotator.services.paragraphs import Paragraph
-from zotero_annotator.services.paragraph_extractor import extract_paragraphs_from_pdf_bytes
+from zotero_annotator.services.pymupdf_adapter import extract_paragraphs_from_pdf_bytes
 from zotero_annotator.services.pdf_pages import get_pdf_page_sizes
 from zotero_annotator.services.pymupdf_paragraphs import ExtractionConfig as PyMuPDFExtractionConfig
 from zotero_annotator.services.pymupdf_paragraphs import (
@@ -30,7 +30,7 @@ from zotero_annotator.services.pymupdf_paragraphs import (
     extract_paragraphs_pymupdf_bytes,
     paragraphs_to_xml,
 )
-from zotero_annotator.services.translators.base import TranslationError, TranslationInput
+from zotero_annotator.services.translators.base import TranslationError
 from zotero_annotator.services.translators.factory import build_translator
 
 
@@ -61,40 +61,6 @@ def _maybe_append_source_snippet(*, translated: str, source: str, enabled: bool,
         return translated
     return f"{translated}\n\nSRC: {snippet}"
 
-
-def _build_translation_input(
-    *,
-    current_paragraph: str,
-    source_lang: str,
-    target_lang: str,
-    previous_paragraph: str = "",
-    next_paragraph: str = "",
-) -> TranslationInput:
-    return TranslationInput(
-        previous_paragraph=previous_paragraph,
-        current_paragraph=current_paragraph,
-        next_paragraph=next_paragraph,
-        source_lang=source_lang,
-        target_lang=target_lang,
-    )
-
-
-def _build_paragraph_translation_input(
-    paragraphs: list[Paragraph],
-    index: int,
-    *,
-    source_lang: str,
-    target_lang: str,
-) -> TranslationInput:
-    previous_paragraph = paragraphs[index - 1].text if index > 0 else ""
-    next_paragraph = paragraphs[index + 1].text if index + 1 < len(paragraphs) else ""
-    return _build_translation_input(
-        previous_paragraph=previous_paragraph,
-        current_paragraph=paragraphs[index].text,
-        next_paragraph=next_paragraph,
-        source_lang=source_lang,
-        target_lang=target_lang,
-    )
 
 
 def _truncate_for_table(value: str, *, max_chars: int) -> str:
