@@ -1205,3 +1205,228 @@ def build_annotation_payload(
         "annotationSortIndex": note_pos.annotation_sort_index,
         "tags": [{"tag": t} for t in tag_names],
     }
+
+
+# ---------------------------------------------------------------------------
+# dev annotate / dev translate helpers
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class DevAnnotateResult:
+    status: Literal["duplicate", "read_only", "created", "error"]
+    item_key: str = ""
+    pdf_key: str = ""
+    paragraph_index: int = 0
+    page: int = 0
+    paragraph_hash: str = ""
+    title: str = ""
+    dedup_tag: str = ""
+    payload: Optional[Dict[str, Any]] = None
+    error_stage: Optional[str] = None
+    error_detail: Optional[str] = None
+
+
+def _fetch_paragraphs_for_dev(
+    *,
+    zotero: ZoteroClient,
+    settings: Any,
+    item_key: str,
+) -> tuple[str, str, bytes, list] | DevAnnotateResult:
+    """item → PDF → paragraphs を取得して返す。失敗時は DevAnnotateResult(error) を返す。"""
+
+    def err(stage: str, detail: str) -> DevAnnotateResult:
+        return DevAnnotateResult(status="error", item_key=item_key, error_stage=stage, error_detail=detail)
+
+    try:
+        item = zotero.get_item(item_key)
+    except httpx.HTTPStatusError as exc:
+        status_code = exc.response.status_code if exc.response is not None else "unknown"
+        return err("Zotero item lookup failed", f"item_key={item_key} status={status_code}")
+    except httpx.HTTPError as exc:
+        return err("Zotero connection failed", f"item_key={item_key} detail={exc}")
+
+    item_title = (item.get("data") or {}).get("title") or ""
+
+    try:
+        children = zotero.list_children(item_key)
+    except httpx.HTTPError as exc:
+        return err("Zotero connection failed", f"children fetch failed item_key={item_key} detail={exc}")
+
+    pdf = zotero.pick_pdf_attachment(children)
+    if not pdf:
+        return err("PDF attachment missing", f"item_key={item_key}")
+    pdf_key = pdf.get("key") or ""
+
+    try:
+        pdf_bytes = zotero.download_attachment(zotero.build_file_url(pdf_key))
+    except httpx.HTTPError as exc:
+        return err("Zotero connection failed", f"pdf download failed pdf_key={pdf_key} detail={exc}")
+
+    try:
+        paragraphs = extract_paragraphs_from_pdf_bytes(pdf_bytes, settings=settings)
+    except (ValueError, RuntimeError, httpx.HTTPError) as exc:
+        return err("Paragraph extraction failed", str(exc))
+
+    if not paragraphs:
+        return err("No paragraphs extracted", f"item_key={item_key} pdf_key={pdf_key} paragraphs=0")
+
+    return item_title, pdf_key, pdf_bytes, paragraphs
+
+
+def run_dev_annotate(
+    *,
+    zotero: ZoteroClient,
+    settings: Any,
+    item_key: str,
+    paragraph_index: int,
+    read_only: bool,
+    translate: bool,
+    annotation_mode: Optional[str],
+    translator: Optional[Translator] = None,
+    source_lang: Optional[str] = None,
+    target_lang: Optional[str] = None,
+) -> DevAnnotateResult:
+    """1段落だけ注釈するビジネスロジック（dev annotate コマンド用）。"""
+
+    def err(stage: str, detail: str) -> DevAnnotateResult:
+        return DevAnnotateResult(status="error", item_key=item_key, error_stage=stage, error_detail=detail)
+
+    fetched = _fetch_paragraphs_for_dev(zotero=zotero, settings=settings, item_key=item_key)
+    if isinstance(fetched, DevAnnotateResult):
+        return fetched
+    item_title, pdf_key, pdf_bytes, paragraphs = fetched
+
+    if paragraph_index >= len(paragraphs):
+        return err(
+            "Paragraph index out of range",
+            f"item_key={item_key} paragraph_index={paragraph_index} paragraphs={len(paragraphs)}",
+        )
+
+    p = paragraphs[paragraph_index]
+    dedup_tags = [f"{settings.dedup_tag_prefix}{h}" for h in (p.dedup_hashes or [p.hash])]
+
+    source_text = p.text
+    comment_text = source_text
+    if translate and translator is not None:
+        try:
+            comment_text = translator.translate(
+                _build_paragraph_translation_input(
+                    paragraphs, paragraph_index,
+                    source_lang=source_lang or "",
+                    target_lang=target_lang or "",
+                )
+            ).text
+            comment_text = _maybe_append_source_snippet(
+                translated=comment_text, source=source_text, enabled=True, chars=_SOURCE_SNIPPET_CHARS,
+            )
+        except TranslationError as exc:
+            return err("Translation failed", f"kind={exc.kind} provider={exc.provider} status={exc.status_code} detail={exc}")
+
+    try:
+        existing = list(zotero.iter_annotations(parent_key=pdf_key, limit_per_page=100))
+    except httpx.HTTPError as exc:
+        return err("Zotero connection failed", f"annotations fetch failed pdf_key={pdf_key} detail={exc}")
+
+    existing_tags: Set[str] = set()
+    for ann in existing:
+        for t in zotero.extract_tag_names(ann):
+            existing_tags.add(t)
+    if any(t in existing_tags for t in dedup_tags):
+        return DevAnnotateResult(
+            status="duplicate", item_key=item_key, pdf_key=pdf_key,
+            paragraph_index=paragraph_index, page=p.page, paragraph_hash=p.hash,
+            title=item_title, dedup_tag=dedup_tags[0],
+        )
+
+    mode = (annotation_mode or settings.annotation_mode).strip()
+    page_sizes = get_pdf_page_sizes(pdf_bytes)
+    payload = build_annotation_payload(
+        paragraph=p, comment_text=comment_text, pdf_key=pdf_key,
+        dedup_tags=dedup_tags, annotation_mode=mode,  # type: ignore[arg-type]
+        page_sizes=page_sizes,
+    )
+
+    if read_only:
+        return DevAnnotateResult(
+            status="read_only", item_key=item_key, pdf_key=pdf_key,
+            paragraph_index=paragraph_index, page=p.page, paragraph_hash=p.hash,
+            title=item_title, dedup_tag=dedup_tags[0], payload=payload,
+        )
+
+    try:
+        zotero.create_annotations([payload])
+    except httpx.HTTPError as exc:
+        return err("Annotation creation failed", f"pdf_key={pdf_key} paragraph_index={paragraph_index} detail={exc}")
+
+    return DevAnnotateResult(
+        status="created", item_key=item_key, pdf_key=pdf_key,
+        paragraph_index=paragraph_index, page=p.page, paragraph_hash=p.hash,
+        title=item_title, dedup_tag=dedup_tags[0],
+    )
+
+
+@dataclass
+class DevTranslateResult:
+    status: Literal["ok", "error"]
+    item_key: str = ""
+    pdf_key: str = ""
+    paragraph_index: int = 0
+    page: int = 0
+    provider: str = ""
+    target_lang: str = ""
+    title: str = ""
+    source_text: str = ""
+    translated_text: str = ""
+    error_stage: Optional[str] = None
+    error_detail: Optional[str] = None
+
+
+def run_dev_translate(
+    *,
+    zotero: ZoteroClient,
+    settings: Any,
+    translator: Translator,
+    item_key: str,
+    paragraph_index: int,
+    source_lang: str,
+    target_lang: str,
+) -> DevTranslateResult:
+    """1段落だけ翻訳するビジネスロジック（dev translate コマンド用）。"""
+
+    def err(stage: str, detail: str) -> DevTranslateResult:
+        return DevTranslateResult(status="error", item_key=item_key, error_stage=stage, error_detail=detail)
+
+    fetched = _fetch_paragraphs_for_dev(zotero=zotero, settings=settings, item_key=item_key)
+    if isinstance(fetched, DevAnnotateResult):
+        return DevTranslateResult(
+            status="error", item_key=item_key,
+            error_stage=fetched.error_stage, error_detail=fetched.error_detail,
+        )
+    item_title, pdf_key, _pdf_bytes, paragraphs = fetched
+
+    if paragraph_index >= len(paragraphs):
+        return err(
+            "Paragraph index out of range",
+            f"item_key={item_key} paragraph_index={paragraph_index} paragraphs={len(paragraphs)}",
+        )
+
+    p = paragraphs[paragraph_index]
+
+    try:
+        result = translator.translate(
+            _build_paragraph_translation_input(
+                paragraphs, paragraph_index,
+                source_lang=source_lang,
+                target_lang=target_lang,
+            )
+        )
+    except TranslationError as exc:
+        return err("Translation failed", f"kind={exc.kind} provider={exc.provider} status={exc.status_code} detail={exc}")
+
+    return DevTranslateResult(
+        status="ok", item_key=item_key, pdf_key=pdf_key,
+        paragraph_index=paragraph_index, page=p.page,
+        provider=result.provider, target_lang=target_lang,
+        title=item_title, source_text=p.text, translated_text=result.text,
+    )
