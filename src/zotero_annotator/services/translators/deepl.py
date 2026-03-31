@@ -1,13 +1,18 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Optional
 
 import httpx
-from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
+from tenacity import (
+    retry,
+    retry_if_exception_type,
+    stop_after_attempt,
+    wait_exponential,
+)
 
 from zotero_annotator.services.translators.base import (
     TranslationError,
+    TranslationErrorKind,
     TranslationInput,
     TranslationResult,
     Translator,
@@ -75,13 +80,13 @@ class DeepLTranslator(Translator):
 
         try:
             return _run()
-        except TranslationError as exc:
+        except TranslationError:
             raise
         except _RetryableDeepLError as exc:
             raise exc.inner
 
 
-def _classify_deepl_error(status_code: int):
+def _classify_deepl_error(status_code: int) -> TranslationErrorKind:
     # DeepL error classification (DeepLエラー分類)
     if status_code in (401, 403):
         return "auth"

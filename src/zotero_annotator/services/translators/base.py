@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Literal, Optional, Protocol
+from typing import Literal, Protocol
 
 
 @dataclass(frozen=True)
@@ -33,7 +33,7 @@ class TranslationError(RuntimeError):
         message: str,
         *,
         provider: str = "",
-        status_code: Optional[int] = None,
+        status_code: int | None = None,
     ) -> None:
         super().__init__(message)
         self.kind = kind

@@ -3,12 +3,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from zotero_annotator.services.translators.chat_completions import (
-    ChatCompletionsTranslator,
+    OpenAICompatibleTranslator,
 )
 
 
 @dataclass(frozen=True)
-class OllamaTranslator(ChatCompletionsTranslator):
+class OllamaTranslator(OpenAICompatibleTranslator):
     # Local translator backed by Ollama's OpenAI-compatible chat/completions API.
     provider: str = "local_llm"
     provider_label: str = "Ollama"

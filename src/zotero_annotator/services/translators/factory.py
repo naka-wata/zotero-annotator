@@ -8,7 +8,7 @@ from zotero_annotator.config import (
 )
 from zotero_annotator.services.translators.base import Translator
 from zotero_annotator.services.translators.chat_completions import (
-    ChatCompletionsTranslator,
+    OpenAICompatibleTranslator,
 )
 from zotero_annotator.services.translators.deepl import DeepLTranslator
 from zotero_annotator.services.translators.ollama import OllamaTranslator
@@ -26,7 +26,7 @@ def build_translator() -> Translator:
 
     if runtime.provider == "chatgpt":
         chatgpt = get_chatgpt_runtime()
-        return ChatCompletionsTranslator(
+        return OpenAICompatibleTranslator(
             api_key=chatgpt.api_key,
             model=chatgpt.model,
             base_url=chatgpt.base_url,

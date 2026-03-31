@@ -1,14 +1,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import List, Optional
 
 
 @dataclass
 class ItemResult:
     item_key: str
     title: str
-    pdf_key: Optional[str]
+    pdf_key: str | None
 
     paragraphs_total: int
     paragraphs_skipped_duplicate: int
@@ -17,29 +16,29 @@ class ItemResult:
     annotations_planned: int
     annotations_created: int
 
-    skipped_reason: Optional[str] = None
-    warnings: List[str] = field(default_factory=list)
+    skipped_reason: str | None = None
+    warnings: list[str] = field(default_factory=list)
 
 
 @dataclass
 class TranslationItemResult:
     item_key: str
     title: str
-    pdf_key: Optional[str]
+    pdf_key: str | None
 
     annotations_total: int
     annotations_targeted: int
     annotations_processed: int
     annotations_updated: int
 
-    skipped_reason: Optional[str] = None
-    warnings: List[str] = field(default_factory=list)
+    skipped_reason: str | None = None
+    warnings: list[str] = field(default_factory=list)
 
 
 def make_skipped_item_result(
     item_key: str,
     title: str,
-    pdf_key: Optional[str],
+    pdf_key: str | None,
     reason: str,
 ) -> ItemResult:
     return ItemResult(
@@ -58,7 +57,7 @@ def make_skipped_item_result(
 def make_skipped_translation_result(
     item_key: str,
     title: str,
-    pdf_key: Optional[str],
+    pdf_key: str | None,
     reason: str,
 ) -> TranslationItemResult:
     return TranslationItemResult(

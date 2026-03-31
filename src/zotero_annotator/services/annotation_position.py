@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Tuple
 
 from zotero_annotator.services.paragraphs import Paragraph, ParagraphCoord
 from zotero_annotator.services.pdf_pages import get_page_size
@@ -14,11 +13,11 @@ class NotePosition:
     y1: float
     x2: float
     y2: float
-    annotation_position: Dict[str, object]
+    annotation_position: dict[str, object]
     annotation_sort_index: str
 
 
-def _first_page_coords(coords: List[ParagraphCoord]) -> List[ParagraphCoord]:
+def _first_page_coords(coords: list[ParagraphCoord]) -> list[ParagraphCoord]:
     page = coords[0].page
     return [c for c in coords if c.page == page]
 
@@ -26,7 +25,7 @@ def _first_page_coords(coords: List[ParagraphCoord]) -> List[ParagraphCoord]:
 def build_note_position(
     paragraph: Paragraph,
     *,
-    page_sizes: Optional[Dict[int, Tuple[float, float]]] = None,
+    page_sizes: dict[int, tuple[float, float]] | None = None,
     # Horizontal offset for left/right tuning (右へ + / 左へ - の左右補正)
     x_offset: float = -30.0,
     # Vertical offset for up/down tuning (上へ + / 下へ - の上下補正)
@@ -68,7 +67,7 @@ def build_note_position(
     x2 = x1 + icon_w
     y2 = y1 + icon_h
 
-    annotation_position: Dict[str, object] = {
+    annotation_position: dict[str, object] = {
         "pageIndex": page_index,
         "rects": [[x1, y1, x2, y2]],
         "rotation": 0,

@@ -2,14 +2,15 @@ from __future__ import annotations
 
 import re
 from hashlib import sha1
-from statistics import median
-from typing import List
+from typing import Any
 
 from zotero_annotator.config import CoreSettings
 from zotero_annotator.services.paragraphs import Paragraph, ParagraphCoord
-from zotero_annotator.services.pymupdf_paragraphs import ExtractionConfig, extract_paragraphs_pymupdf_bytes
+from zotero_annotator.services.pymupdf_paragraphs import (
+    ExtractionConfig,
+    extract_paragraphs_pymupdf_bytes,
+)
 from zotero_annotator.utils.text import normalize_text
-
 
 _LEADING_CONTINUATION_RE = re.compile(r"^([a-z]|[,\)\]])")
 _SENTENCE_END_RE = re.compile(r'[.!?][\"\'\)\]]*\s*$')
@@ -168,11 +169,11 @@ def _hash_text(text: str) -> str:
     return sha1(normalize_text(text).encode("utf-8")).hexdigest()
 
 
-def _merge_leading_continuations(paragraphs: List[Paragraph]) -> List[Paragraph]:
+def _merge_leading_continuations(paragraphs: list[Paragraph]) -> list[Paragraph]:
     if not paragraphs:
         return paragraphs
 
-    out: List[Paragraph] = []
+    out: list[Paragraph] = []
     for p in paragraphs:
         if not out:
             out.append(p)
@@ -236,9 +237,9 @@ def _merge_leading_continuations(paragraphs: List[Paragraph]) -> List[Paragraph]
 def _split_pymupdf_paragraph_by_lines(
     *,
     text: str,
-    line_items: list,
+    line_items: list[Any],
     max_chars: int,
-) -> list[tuple[str, list]]:
+) -> list[tuple[str, list[Any]]]:
     """
     Split a PyMuPDF paragraph using its per-line items, so we can keep accurate bboxes.
 
@@ -250,8 +251,8 @@ def _split_pymupdf_paragraph_by_lines(
     if max_chars <= 0 or len(norm) <= max_chars or not line_items:
         return [(norm, list(line_items))]
 
-    chunks: list[tuple[str, list]] = []
-    cur: list = []
+    chunks: list[tuple[str, list[Any]]] = []
+    cur: list[Any] = []
     cur_len = 0
 
     def flush(n: int) -> None:
@@ -299,7 +300,7 @@ def extract_paragraphs_from_pdf_bytes(
     pdf_bytes: bytes,
     *,
     settings: CoreSettings,
-) -> List[Paragraph]:
+) -> list[Paragraph]:
     """
     Paragraph extraction entrypoint (PyMuPDF-only backend).
 
@@ -314,7 +315,7 @@ def extract_paragraphs_from_pdf_bytes(
     if settings.para_skip_captions:
         raw = [p for p in raw if not p.get("is_caption")]
 
-    paras: List[Paragraph] = []
+    paras: list[Paragraph] = []
     font_medians = [
         float(p.get("_median_font_size") or 0.0)
         for p in raw
@@ -358,7 +359,7 @@ def extract_paragraphs_from_pdf_bytes(
         if font_threshold and med_fs and med_fs < font_threshold:
             continue
 
-        coords: List[ParagraphCoord] = []
+        coords: list[ParagraphCoord] = []
 
         # Prefer a small anchor bbox (topmost line) for note placement.
         anchor = p.get("_anchor")

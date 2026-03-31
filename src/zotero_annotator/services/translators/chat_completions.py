@@ -2,7 +2,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
+from tenacity import (
+    retry,
+    retry_if_exception_type,
+    stop_after_attempt,
+    wait_exponential,
+)
 
 from zotero_annotator.services.translators.base import (
     TranslationError,
@@ -16,7 +21,7 @@ from zotero_annotator.services.translators.llm_common import (
 
 
 @dataclass(frozen=True)
-class ChatCompletionsTranslator(Translator):
+class OpenAICompatibleTranslator(Translator):
     # Shared translator for OpenAI-compatible chat/completions backends.
     api_key: str
     model: str
