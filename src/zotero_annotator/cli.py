@@ -14,6 +14,7 @@ from rich.table import Table
 
 from zotero_annotator.clients.zotero import ZoteroClient
 from zotero_annotator.config import get_core_settings, get_translation_runtime
+from zotero_annotator.models.results import ItemResult
 from zotero_annotator.services.annotation_position import build_note_position
 from zotero_annotator.services.pdf_pages import get_pdf_page_sizes
 from zotero_annotator.services.pipeline import (
@@ -31,7 +32,6 @@ from zotero_annotator.services.pymupdf_paragraphs import (
     extract_paragraphs_pymupdf_bytes,
     paragraphs_to_xml,
 )
-from zotero_annotator.models.results import ItemResult
 from zotero_annotator.services.translators.base import Translator
 from zotero_annotator.services.translators.factory import build_translator
 
