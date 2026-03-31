@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, Dict, List, NotRequired, TypedDict
+from typing import Any, TypedDict
 
 
 class ZoteroTag(TypedDict):
@@ -20,7 +20,7 @@ class ZoteroItemData(TypedDict, total=False):
     key: str
     itemType: str
     title: str
-    tags: List[ZoteroTag]
+    tags: list[ZoteroTag]
     # Attachment-specific
     contentType: str
     parentItem: str
@@ -32,7 +32,7 @@ class ZoteroItem(TypedDict, total=False):
     key: str
     version: int
     data: ZoteroItemData
-    links: Dict[str, Any]
+    links: dict[str, Any]
 
 
 class ZoteroAnnotationData(TypedDict, total=False):
@@ -56,7 +56,7 @@ class ZoteroAnnotationData(TypedDict, total=False):
     annotationPosition: str  # JSON-encoded string
     annotationPageLabel: str
     annotationSortIndex: str
-    tags: List[ZoteroTag]
+    tags: list[ZoteroTag]
 
 
 class ZoteroAnnotation(TypedDict, total=False):
@@ -65,4 +65,4 @@ class ZoteroAnnotation(TypedDict, total=False):
     key: str
     version: int
     data: ZoteroAnnotationData
-    links: Dict[str, Any]
+    links: dict[str, Any]

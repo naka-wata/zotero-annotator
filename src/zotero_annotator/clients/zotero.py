@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
-from typing import Any
+from typing import Any, cast
 
 import httpx
 
@@ -68,7 +68,7 @@ class ZoteroClient:
         }
         resp = self._get(f"{self._library_path()}/items", params=params)
         resp.raise_for_status()
-        return resp.json()
+        return cast(list[dict[str, Any]], resp.json())
 
     # Iterate over all items by tag with pagination (タグのついた論文をlist_items_by_tagで繰り返し取得する)
     def iter_items_by_tag(self, tag: str, limit_per_page: int = 100) -> Iterable[dict[str, Any]]:
@@ -85,14 +85,14 @@ class ZoteroClient:
         params = {"include": "data"}
         resp = self._get(f"{self._library_path()}/items/{parent_key}/children", params=params)
         resp.raise_for_status()
-        return resp.json()
+        return cast(list[dict[str, Any]], resp.json())
 
     # Get a single item by key (アイテムをキーで取得する)
     def get_item(self, item_key: str) -> dict[str, Any]:
         params = {"include": "data"}
         resp = self._get(f"{self._library_path()}/items/{item_key}", params=params)
         resp.raise_for_status()
-        return resp.json()
+        return cast(dict[str, Any], resp.json())
 
     # Pick the first PDF attachment from children items (list_childrenの子アイテムの中から最初のPDF添付ファイルを選択する)
     def pick_pdf_attachment(self, children: list[dict[str, Any]]) -> dict[str, Any] | None:
@@ -142,7 +142,7 @@ class ZoteroClient:
     def create_annotations(self, annotations: list[dict[str, Any]]) -> list[dict[str, Any]]:
         resp = self._post(f"{self._library_path()}/items", json_body=annotations)
         resp.raise_for_status()
-        return resp.json()
+        return cast(list[dict[str, Any]], resp.json())
 
     # Update an item with concurrency control (アイテムを安全に更新する)
     def update_item(self, item_key: str, data: dict[str, Any], version: int | None) -> dict[str, Any]:
@@ -155,7 +155,7 @@ class ZoteroClient:
         # (Zoteroの更新APIは成功時に204でボディなしの場合がある)
         if resp.status_code == 204 or not resp.content:
             return {}
-        return resp.json()
+        return cast(dict[str, Any], resp.json())
 
     # Delete an item with concurrency control (アイテムを安全に削除する)
     def delete_item(self, item_key: str, version: int | None) -> None:
@@ -177,7 +177,7 @@ class ZoteroClient:
     @staticmethod
     def extract_tag_names(item: dict[str, Any]) -> list[str]:
         tags = (item.get("data") or {}).get("tags") or []
-        return [t.get("tag") for t in tags if isinstance(t, dict) and t.get("tag")]
+        return [t["tag"] for t in tags if isinstance(t, dict) and t.get("tag")]
 
     # Merge current tags with additions and removals (現在のタグに追加と削除を反映させる)
     @staticmethod
