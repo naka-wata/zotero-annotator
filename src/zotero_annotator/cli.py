@@ -3,9 +3,8 @@ from __future__ import annotations
 import base64
 import json
 from hashlib import sha1
-import statistics
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import Any, NoReturn
 
 import httpx
 import typer
@@ -15,23 +14,26 @@ from rich.table import Table
 
 from zotero_annotator.clients.zotero import ZoteroClient
 from zotero_annotator.config import get_core_settings, get_translation_runtime
+from zotero_annotator.services.annotation_position import build_note_position
+from zotero_annotator.services.pdf_pages import get_pdf_page_sizes
 from zotero_annotator.services.pipeline import (
     run_dev_annotate,
     run_dev_translate,
     run_no_translation,
     run_translate_existing_notes,
 )
-from zotero_annotator.services.annotation_position import build_note_position
 from zotero_annotator.services.pymupdf_adapter import extract_paragraphs_from_pdf_bytes
-from zotero_annotator.services.pdf_pages import get_pdf_page_sizes
-from zotero_annotator.services.pymupdf_paragraphs import ExtractionConfig as PyMuPDFExtractionConfig
+from zotero_annotator.services.pymupdf_paragraphs import (
+    ExtractionConfig as PyMuPDFExtractionConfig,
+)
 from zotero_annotator.services.pymupdf_paragraphs import (
     extract_paragraphs_from_pymupdf_dict,
     extract_paragraphs_pymupdf_bytes,
     paragraphs_to_xml,
 )
+from zotero_annotator.models.results import ItemResult
+from zotero_annotator.services.translators.base import Translator
 from zotero_annotator.services.translators.factory import build_translator
-
 
 app = typer.Typer(add_completion=False)
 dev_app = typer.Typer(help="Development helpers / 開発用コマンド")
@@ -60,7 +62,7 @@ def _search_sort_key(item_key: str, matched_tags_by_item_key: dict[str, list[str
 # Search command to list target papers quickly (対象論文を確認する検索コマンド)
 @app.command()
 def search(
-    tag: Optional[List[str]] = typer.Option(
+    tag: list[str] | None = typer.Option(
         None,
         "--tag",
         help="Target tag to OR with base tag (repeatable) / 対象タグをOR追加（複数指定可）",
@@ -94,7 +96,7 @@ def search(
     )
     try:
         matched_tags_by_item_key: dict[str, list[str]] = {}
-        items_by_key: dict[str, dict] = {}
+        items_by_key: dict[str, dict[str, Any]] = {}
         for target_tag in tags_to_search:
             for item in zotero.iter_items_by_tag(tag=target_tag, limit_per_page=100):
                 key = item.get("key") or ""
@@ -146,8 +148,8 @@ def search(
 # Main run command for the annotation pipeline (アノテーション処理パイプラインの実行コマンド)
 def _validate_run_options(
     *,
-    tag: Optional[str],
-    item_keys: Optional[List[str]],
+    tag: str | None,
+    item_keys: list[str] | None,
     max_items: int,
     delete_broken: bool,
     keep_broken: bool,
@@ -161,7 +163,7 @@ def _validate_run_options(
         raise typer.BadParameter("Specify at most one of --delete-broken or --keep-broken")
 
 
-def _build_translation_runtime(*, translate: bool) -> Tuple[Optional[object], str, str]:
+def _build_translation_runtime(*, translate: bool) -> tuple[Translator | None, str, str]:
     if not translate:
         return None, "", ""
 
@@ -170,7 +172,7 @@ def _build_translation_runtime(*, translate: bool) -> Tuple[Optional[object], st
     return translator, translation_runtime.source_lang, translation_runtime.target_lang
 
 
-def _render_run_results(*, results: list[object], translate: bool) -> None:
+def _render_run_results(*, results: list[ItemResult], translate: bool) -> None:
     # Print per-item summary (論文ごとの実行結果を表示)
     for r in results:
         if r.skipped_reason:
@@ -186,15 +188,15 @@ def _render_run_results(*, results: list[object], translate: bool) -> None:
 
 def _run_annotations_command(
     *,
-    tag: Optional[str],
-    item_keys: Optional[List[str]],
+    tag: str | None,
+    item_keys: list[str] | None,
     max_items: int,
     read_only: bool,
     translate: bool,
     delete_broken: bool,
     keep_broken: bool,
 ) -> None:
-    def fail(stage: str, detail: str) -> None:
+    def fail(stage: str, detail: str) -> NoReturn:
         console.print(f"[red]ERROR[/red] {stage}: {detail}")
         raise typer.Exit(code=1)
 
@@ -245,8 +247,8 @@ def _run_annotations_command(
 
 @app.command()
 def run(
-    tag: Optional[str] = typer.Option(None, "--tag", help="Target tag override / 対象タグを上書き"),
-    item_keys: Optional[List[str]] = typer.Option(
+    tag: str | None = typer.Option(None, "--tag", help="Target tag override / 対象タグを上書き"),
+    item_keys: list[str] | None = typer.Option(
         None,
         "--item-key",
         help="Target item key (repeatable) / 対象item-key（複数指定可）",
@@ -280,8 +282,8 @@ def run(
 
 @app.command()
 def base(
-    tag: Optional[str] = typer.Option(None, "--tag", help="Target tag override / 対象タグを上書き"),
-    item_keys: Optional[List[str]] = typer.Option(
+    tag: str | None = typer.Option(None, "--tag", help="Target tag override / 対象タグを上書き"),
+    item_keys: list[str] | None = typer.Option(
         None,
         "--item-key",
         help="Target item key (repeatable) / 対象item-key（複数指定可）",
@@ -315,7 +317,7 @@ def base(
 
 @app.command()
 def translate(
-    item_keys: Optional[List[str]] = typer.Option(
+    item_keys: list[str] | None = typer.Option(
         None,
         "--item-key",
         help="Target item key (repeatable) / 対象item-key（複数指定可）",
@@ -329,7 +331,7 @@ def translate(
     if max_items < 1:
         raise typer.BadParameter("--max-items must be >= 1")
 
-    def fail(stage: str, detail: str) -> None:
+    def fail(stage: str, detail: str) -> NoReturn:
         console.print(f"[red]ERROR[/red] {stage}: {detail}")
         raise typer.Exit(code=1)
 
@@ -395,7 +397,7 @@ def dev_annotate(
         "--translate/--no-translate",
         help="Translate before annotating / 注釈前に翻訳する",
     ),
-    annotation_mode: Optional[str] = typer.Option(
+    annotation_mode: str | None = typer.Option(
         None,
         "--annotation-mode",
         help="Override output mode (note/highlight) / 出力モード上書き",
@@ -514,7 +516,7 @@ def dev_dump_xml(
     Dump PyMuPDF extracted paragraphs XML from the same PDF attachment.
     """
 
-    def fail(stage: str, detail: str) -> None:
+    def fail(stage: str, detail: str) -> NoReturn:
         console.print(f"[red]ERROR[/red] {stage}: {detail}")
         raise typer.Exit(code=1)
 
@@ -568,12 +570,12 @@ def dev_dump_xml(
 @dev_app.command("dump-pymupdf-raw-text")
 def dev_dump_pymupdf_raw_text(
     item_key: str = typer.Option(..., "--item-key", help="Target item key / 対象アイテムキー"),
-    out: Optional[Path] = typer.Option(
+    out: Path | None = typer.Option(
         None,
         "--out",
         help="Output JSON path / 出力JSONパス（省略時は pymupdf.raw.<item_key>.json）",
     ),
-    out_text: Optional[Path] = typer.Option(
+    out_text: Path | None = typer.Option(
         None,
         "--out-text",
         help="Optional output plain text path / 追加でプレーンテキストも出力したい場合のパス",
@@ -586,12 +588,12 @@ def dev_dump_pymupdf_raw_text(
     our paragraph detection pipeline.
     """
 
-    def fail(stage: str, detail: str) -> None:
+    def fail(stage: str, detail: str) -> NoReturn:
         console.print(f"[red]ERROR[/red] {stage}: {detail}")
         raise typer.Exit(code=1)
 
     try:
-        import fitz  # type: ignore
+        import fitz
     except Exception as exc:
         fail("PyMuPDF import failed", f"detail={exc}")
         return
@@ -628,7 +630,7 @@ def dev_dump_pymupdf_raw_text(
 
         doc = fitz.open(stream=pdf_bytes, filetype="pdf")
         try:
-            pages = []
+            pages: list[dict[str, Any]] = []
             total_chars = 0
             for page_index in range(doc.page_count):
                 page = doc.load_page(page_index)
@@ -678,7 +680,7 @@ def dev_dump_pymupdf_raw_text(
 @dev_app.command("dump-pymupdf-dict")
 def dev_dump_pymupdf_dict(
     item_key: str = typer.Option(..., "--item-key", help="Target item key / 対象アイテムキー"),
-    out: Optional[Path] = typer.Option(
+    out: Path | None = typer.Option(
         None,
         "--out",
         help="Output JSON path / 出力JSONパス（省略時は pymupdf.dict.<item_key>.json）",
@@ -696,12 +698,12 @@ def dev_dump_pymupdf_dict(
     fetching the PDF from Zotero by item-key.
     """
 
-    def fail(stage: str, detail: str) -> None:
+    def fail(stage: str, detail: str) -> NoReturn:
         console.print(f"[red]ERROR[/red] {stage}: {detail}")
         raise typer.Exit(code=1)
 
     try:
-        import fitz  # type: ignore
+        import fitz
     except Exception as exc:
         fail("PyMuPDF import failed", f"detail={exc}")
         return
@@ -799,7 +801,7 @@ def dev_reconstruct_from_pymupdf_dict(
         "--out-xml",
         help="Output paragraphs XML path / 段落XML出力先",
     ),
-    out_json: Optional[Path] = typer.Option(
+    out_json: Path | None = typer.Option(
         None,
         "--out-json",
         help="Optional output paragraphs JSON path / 段落JSON出力先（任意）",
@@ -831,14 +833,14 @@ def dev_reconstruct_from_pymupdf_dict(
 @dev_app.command("paragraphs")
 def dev_paragraphs(
     item_key: str = typer.Option(..., "--item-key", help="Target item key / 対象アイテムキー"),
-    out: Optional[Path] = typer.Option(None, "--out", help="Output JSON path / JSON出力先"),
+    out: Path | None = typer.Option(None, "--out", help="Output JSON path / JSON出力先"),
     max_rows: int = typer.Option(20, "--max-rows", help="Max rows to print / 表示する最大件数"),
 ) -> None:
     """Inspect extracted paragraphs from item PDF (PyMuPDF backend)."""
     if max_rows < 1:
         raise typer.BadParameter("--max-rows must be >= 1")
 
-    def fail(stage: str, detail: str) -> None:
+    def fail(stage: str, detail: str) -> NoReturn:
         console.print(f"[red]ERROR[/red] {stage}: {detail}")
         raise typer.Exit(code=1)
 
@@ -907,7 +909,7 @@ def dev_repair_annotations(
     (必須フィールドが欠けている注釈を修復する)
     """
 
-    def fail(stage: str, detail: str) -> None:
+    def fail(stage: str, detail: str) -> NoReturn:
         console.print(f"[red]ERROR[/red] {stage}: {detail}")
         raise typer.Exit(code=1)
 
@@ -1034,7 +1036,7 @@ def dev_delete_broken_annotations(
 ) -> None:
     """Delete broken annotations missing required fields (壊れた注釈を削除する)."""
 
-    def fail(stage: str, detail: str) -> None:
+    def fail(stage: str, detail: str) -> NoReturn:
         console.print(f"[red]ERROR[/red] {stage}: {detail}")
         raise typer.Exit(code=1)
 
@@ -1113,7 +1115,7 @@ def dev_delete_all_annotations(
 ) -> None:
     """Delete all PDF annotations for the target item (対象itemのPDF注釈を全削除する)."""
 
-    def fail(stage: str, detail: str) -> None:
+    def fail(stage: str, detail: str) -> NoReturn:
         console.print(f"[red]ERROR[/red] {stage}: {detail}")
         raise typer.Exit(code=1)
 
@@ -1174,7 +1176,7 @@ def dev_audit_annotations(
     if max_problem_rows < 0:
         raise typer.BadParameter("--max-problem-rows must be >= 0")
 
-    def fail(stage: str, detail: str) -> None:
+    def fail(stage: str, detail: str) -> NoReturn:
         console.print(f"[red]ERROR[/red] {stage}: {detail}")
         raise typer.Exit(code=1)
 
