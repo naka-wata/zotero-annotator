@@ -1,18 +1,18 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from statistics import mean, median
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any
 from xml.etree import ElementTree as ET
-
 
 try:
     import fitz  # PyMuPDF
 except Exception as exc:  # pragma: no cover
-    fitz = None  # type: ignore[assignment]
-    _IMPORT_ERROR = exc
+    fitz = None
+    _IMPORT_ERROR: Exception | None = exc
 else:  # pragma: no cover
     _IMPORT_ERROR = None
 
@@ -210,22 +210,22 @@ class _Line:
 @dataclass
 class _Paragraph:
     paragraph_id: int
-    lines: List[_Line]
+    lines: list[_Line]
     is_caption: bool
 
     @property
-    def pages(self) -> List[int]:
+    def pages(self) -> list[int]:
         return sorted({l.page_index + 1 for l in self.lines})
 
     @property
     def text(self) -> str:
         return _join_line_texts(self.lines)
 
-    def bboxes_by_page(self) -> List[Dict[str, float | int]]:
-        by_page: Dict[int, List[_Line]] = {}
+    def bboxes_by_page(self) -> list[dict[str, float | int]]:
+        by_page: dict[int, list[_Line]] = {}
         for l in self.lines:
             by_page.setdefault(l.page_index + 1, []).append(l)
-        out: List[Dict[str, float | int]] = []
+        out: list[dict[str, float | int]] = []
         for page, ls in sorted(by_page.items(), key=lambda t: t[0]):
             x0 = min(l.x0 for l in ls)
             y0 = min(l.y0 for l in ls)
@@ -234,7 +234,7 @@ class _Paragraph:
             out.append({"page": page, "x0": float(x0), "y0": float(y0), "x1": float(x1), "y1": float(y1)})
         return out
 
-    def anchor_bbox(self) -> Dict[str, float | int]:
+    def anchor_bbox(self) -> dict[str, float | int]:
         """
         Return a small bbox used to place note icons.
 
@@ -262,6 +262,11 @@ class _Paragraph:
             "y1": float(top.y1),
         }
 
+def _safe_median_font_size(lines: Sequence[_Line]) -> float:
+    sizes = [l.font_size for l in lines if l.font_size > 0]
+    return float(median(sizes)) if sizes else 0.0
+
+
 def _require_pymupdf() -> None:
     if fitz is None:  # pragma: no cover
         raise RuntimeError(
@@ -269,13 +274,13 @@ def _require_pymupdf() -> None:
         ) from _IMPORT_ERROR
 
 
-def _merge_spans_into_line_text(spans: Sequence[dict], *, font_size_hint: float) -> str:
+def _merge_spans_into_line_text(spans: Sequence[dict[str, Any]], *, font_size_hint: float) -> str:
     """
     Merge spans in the same line into a single string.
     PyMuPDF often omits literal spaces; insert spaces by bbox gaps.
     """
-    items: List[Tuple[float, float, str, float]] = []
-    sizes: List[float] = []
+    items: list[tuple[float, float, str, float]] = []
+    sizes: list[float] = []
     for sp in spans:
         if not isinstance(sp, dict):
             continue
@@ -286,7 +291,8 @@ def _merge_spans_into_line_text(spans: Sequence[dict], *, font_size_hint: float)
         if not (isinstance(bbox, (list, tuple)) and len(bbox) == 4):
             continue
         x0, _y0, x1, _y1 = map(float, bbox)
-        fs = float(sp.get("size")) if isinstance(sp.get("size"), (int, float)) else 0.0
+        _size = sp.get("size")
+        fs = float(_size) if isinstance(_size, (int, float)) else 0.0
         if fs > 0:
             sizes.append(fs)
         items.append((x0, x1, t, fs))
@@ -297,8 +303,8 @@ def _merge_spans_into_line_text(spans: Sequence[dict], *, font_size_hint: float)
     base_fs = float(median(sizes)) if sizes else float(font_size_hint or 10.0)
     gap_thresh = max(0.5, 0.06 * base_fs)
 
-    parts: List[str] = []
-    prev_x1: Optional[float] = None
+    parts: list[str] = []
+    prev_x1: float | None = None
     for x0, x1, t, _fs in items:
         if prev_x1 is not None and (x0 - prev_x1) >= gap_thresh:
             if parts and not parts[-1].endswith(" "):
@@ -311,8 +317,8 @@ def _merge_spans_into_line_text(spans: Sequence[dict], *, font_size_hint: float)
     return re.sub(r"\s+", " ", text).strip()
 
 
-def _iter_lines_from_page_dict(page_dict: dict, *, page_index: int, config: ExtractionConfig) -> List[_Line]:
-    out: List[_Line] = []
+def _iter_lines_from_page_dict(page_dict: dict[str, Any], *, page_index: int, config: ExtractionConfig) -> list[_Line]:
+    out: list[_Line] = []
     blocks = page_dict.get("blocks") or []
     for b_i, b in enumerate(blocks):
         if not isinstance(b, dict) or b.get("type") != 0:
@@ -325,7 +331,7 @@ def _iter_lines_from_page_dict(page_dict: dict, *, page_index: int, config: Extr
                 continue
             x0, y0, x1, y1 = map(float, bbox)
             spans = ln.get("spans") or []
-            sizes = [float(sp.get("size")) for sp in spans if isinstance(sp, dict) and isinstance(sp.get("size"), (int, float))]
+            sizes = [float(sp["size"]) for sp in spans if isinstance(sp, dict) and isinstance(sp.get("size"), (int, float))]
             fs = float(median(sizes)) if sizes else 0.0
             text = _merge_spans_into_line_text(spans, font_size_hint=fs)
             if not text:
@@ -517,7 +523,7 @@ def _compute_body_band(
     # Exclude obvious footnote starts near the bottom so they don't inflate the body band.
     cap_re = re.compile(config.caption_re, flags=re.IGNORECASE)
     foot_re = re.compile(config.footnote_start_re)
-    candidates: List[_Line] = []
+    candidates: list[_Line] = []
     for l in lines:
         s = (l.text or "").strip()
         if len(s) < 10:
@@ -627,7 +633,7 @@ def _is_caption_line(
 
 
 def _join_line_texts(lines: Sequence[_Line]) -> str:
-    parts: List[str] = []
+    parts: list[str] = []
     for line in lines:
         s = (line.text or "").strip()
         if not s:
@@ -763,7 +769,7 @@ def _looks_like_reference_entry(text: str) -> bool:
     return score >= 2
 
 
-def _trim_after_references_heading(paras: List[_Paragraph], *, config: ExtractionConfig) -> List[_Paragraph]:
+def _trim_after_references_heading(paras: list[_Paragraph], *, config: ExtractionConfig) -> list[_Paragraph]:
     if not config.skip_after_references or not paras:
         return paras
 
@@ -848,7 +854,7 @@ def _table_like_score(text: str) -> float:
     return max(0.0, min(1.0, score))
 
 
-def _para_bbox_on_page(para: _Paragraph, page_index: int) -> Optional[Tuple[float, float, float, float]]:
+def _para_bbox_on_page(para: _Paragraph, page_index: int) -> tuple[float, float, float, float] | None:
     ls = [l for l in para.lines if l.page_index == page_index]
     if not ls:
         return None
@@ -860,12 +866,12 @@ def _para_bbox_on_page(para: _Paragraph, page_index: int) -> Optional[Tuple[floa
 
 
 def _merge_caption_continuations_in_page(
-    paras: List[_Paragraph],
+    paras: list[_Paragraph],
     *,
     page_index: int,
     avg_h: float,
     config: ExtractionConfig,
-) -> List[_Paragraph]:
+) -> list[_Paragraph]:
     """
     Merge caption label line and its following prose line.
     Example: "Table 1:" + "The upper table compares ..." -> one caption paragraph.
@@ -873,7 +879,7 @@ def _merge_caption_continuations_in_page(
     if not paras:
         return paras
 
-    out: List[_Paragraph] = []
+    out: list[_Paragraph] = []
     i = 0
     while i < len(paras):
         cur = paras[i]
@@ -928,11 +934,11 @@ def _merge_caption_continuations_in_page(
 
 
 def _split_caption_body_tails_in_page(
-    paras: List[_Paragraph],
+    paras: list[_Paragraph],
     *,
     page_index: int,
     avg_h: float,
-) -> List[_Paragraph]:
+) -> list[_Paragraph]:
     """
     Split cases where body prose was mistakenly absorbed into the tail of a caption.
 
@@ -942,7 +948,7 @@ def _split_caption_body_tails_in_page(
     """
     if not paras:
         return paras
-    out: List[_Paragraph] = []
+    out: list[_Paragraph] = []
     for p in paras:
         if not p.is_caption:
             out.append(p)
@@ -952,7 +958,7 @@ def _split_caption_body_tails_in_page(
             out.append(p)
             continue
 
-        cut: Optional[int] = None
+        cut: int | None = None
         for i in range(1, len(page_lines)):
             prev = page_lines[i - 1]
             cur = page_lines[i]
@@ -988,13 +994,13 @@ def _split_caption_body_tails_in_page(
 
 
 def _drop_table_body_near_captions(
-    paras: List[_Paragraph],
+    paras: list[_Paragraph],
     *,
     page_index: int,
     page_w: float,
     page_h: float,
     config: ExtractionConfig,
-) -> List[_Paragraph]:
+) -> list[_Paragraph]:
     """
     Drop table body fragments while keeping the caption.
 
@@ -1006,7 +1012,7 @@ def _drop_table_body_near_captions(
 
     mid = page_w * float(config.column_split_ratio)
 
-    def col_of_para(p: _Paragraph) -> Optional[int]:
+    def col_of_para(p: _Paragraph) -> int | None:
         bb = _para_bbox_on_page(p, page_index)
         if not bb:
             return None
@@ -1017,7 +1023,7 @@ def _drop_table_body_near_captions(
             return None
         return 0 if x0 < mid else 1
 
-    table_caption_idxs: List[int] = []
+    table_caption_idxs: list[int] = []
     for i, p in enumerate(paras):
         if not p.is_caption:
             continue
@@ -1046,8 +1052,8 @@ def _drop_table_body_near_captions(
             (cap_y1, min(page_h, cap_y1 + win), "below"),
         ]
         for band_y0, band_y1, where in bands:
-            candidates_all: List[int] = []
-            candidates_strong: List[int] = []
+            candidates_all: list[int] = []
+            candidates_strong: list[int] = []
             for j, p in enumerate(paras):
                 if j == cap_i:
                     continue
@@ -1117,13 +1123,13 @@ def _is_eq_number_line(line: _Line, *, page_w: float, config: ExtractionConfig) 
 
 
 def _merge_equation_number_paragraphs(
-    paras: List[_Paragraph],
+    paras: list[_Paragraph],
     *,
     page_index: int,
     page_w: float,
     avg_h: float,
     config: ExtractionConfig,
-) -> List[_Paragraph]:
+) -> list[_Paragraph]:
     """
     PyMuPDF may emit equation numbers like "(1)" as separate tiny paragraphs on the right margin.
     Merge them into the nearest preceding paragraph on the same baseline so that later
@@ -1133,7 +1139,7 @@ def _merge_equation_number_paragraphs(
         return paras
 
     y_tol = avg_h * float(config.display_math_merge_eqno_y_tol_mult)
-    out: List[_Paragraph] = []
+    out: list[_Paragraph] = []
 
     for p in paras:
         bb = _para_bbox_on_page(p, page_index)
@@ -1191,12 +1197,12 @@ def _merge_equation_number_paragraphs(
 
 
 def _replace_display_math_paragraphs(
-    paras: List[_Paragraph],
+    paras: list[_Paragraph],
     *,
     page_index: int,
     page_w: float,
     config: ExtractionConfig,
-) -> List[_Paragraph]:
+) -> list[_Paragraph]:
     """
     Replace display equations (numbered) with a placeholder token.
     We only target equations that have an explicit equation number like "(1)".
@@ -1204,7 +1210,7 @@ def _replace_display_math_paragraphs(
     if not config.replace_display_math_with_placeholder:
         return paras
 
-    out: List[_Paragraph] = []
+    out: list[_Paragraph] = []
     for p in paras:
         if p.is_caption:
             out.append(p)
@@ -1230,7 +1236,8 @@ def _replace_display_math_paragraphs(
             out.append(p)
             continue
         x0, y0, x1, y1 = bb
-        fs = float(median([l.font_size for l in p.lines if l.font_size > 0]) or [0.0])
+        _fsizes = [l.font_size for l in p.lines if l.font_size > 0]
+        fs = float(median(_fsizes)) if _fsizes else 0.0
         label = str(config.display_math_placeholder)
         if eqno_text:
             m = re.search(r"\(\s*\d{1,3}(?:\.\d{1,2}|[a-z])?\s*\)", eqno_text)
@@ -1252,13 +1259,13 @@ def _replace_display_math_paragraphs(
 
 
 def _replace_display_math_lines(
-    lines: List[_Line],
+    lines: list[_Line],
     *,
     page_index: int,
     page_w: float,
     avg_h: float,
     config: ExtractionConfig,
-) -> List[_Line]:
+) -> list[_Line]:
     """
     Replace a numbered display-math *block* with a single placeholder line.
 
@@ -1278,7 +1285,7 @@ def _replace_display_math_lines(
     loose = avg_h * 2.4
 
     remove: set[int] = set()
-    placeholders: List[_Line] = []
+    placeholders: list[_Line] = []
 
     for i in sorted(eqno_idx, key=lambda k: (lines[k].y0, lines[k].x0)):
         if i in remove:
@@ -1286,7 +1293,7 @@ def _replace_display_math_lines(
         eq = lines[i]
         cy = (eq.y0 + eq.y1) / 2.0
 
-        core: List[Tuple[int, _Line]] = []
+        core: list[tuple[int, _Line]] = []
         for j, l in enumerate(lines):
             if j in remove:
                 continue
@@ -1326,7 +1333,8 @@ def _replace_display_math_lines(
         ys0 = min(l.y0 for _j, l in cluster)
         xs1 = max(l.x1 for _j, l in cluster)
         ys1 = max(l.y1 for _j, l in cluster)
-        fs = float(median([l.font_size for _j, l in cluster if l.font_size > 0]) or [0.0])
+        _fsizes_c = [l.font_size for _j, l in cluster if l.font_size > 0]
+        fs = float(median(_fsizes_c)) if _fsizes_c else 0.0
 
         eqno_raw = (eq.text or "").strip()
         m = re.search(r"\(\s*\d{1,3}(?:\.\d{1,2}|[a-z])?\s*\)", eqno_raw)
@@ -1358,14 +1366,14 @@ def _replace_display_math_lines(
 
 
 def _replace_unnumbered_display_math_blocks(
-    lines: List[_Line],
+    lines: list[_Line],
     *,
     page_index: int,
     page_w: float,
     page_h: float,
     avg_h: float,
     config: ExtractionConfig,
-) -> List[_Line]:
+) -> list[_Line]:
     if (
         not config.replace_unnumbered_display_math_with_placeholder
         or not config.replace_display_math_with_placeholder
@@ -1404,8 +1412,8 @@ def _replace_unnumbered_display_math_blocks(
 
     out_lines = list(lines)
     remove_idx: set[int] = set()
-    updated: Dict[int, _Line] = {}
-    placeholders: List[_Line] = []
+    updated: dict[int, _Line] = {}
+    placeholders: list[_Line] = []
 
     def current_line(idx: int, fallback: _Line) -> _Line:
         return updated.get(idx, fallback)
@@ -1423,7 +1431,7 @@ def _replace_unnumbered_display_math_blocks(
         )
 
     for col in (0, 1):
-        col_lines: List[Tuple[int, _Line]] = [
+        col_lines: list[tuple[int, _Line]] = [
             (idx, l)
             for idx, l in enumerate(out_lines)
             if l.page_index == page_index and _column_of(l, page_w=page_w, config=config) == col
@@ -1436,7 +1444,7 @@ def _replace_unnumbered_display_math_blocks(
             if idx0 in remove_idx or not is_candidate_math_line(l0):
                 i += 1
                 continue
-            block: List[Tuple[int, _Line]] = [(idx0, l0)]
+            block: list[tuple[int, _Line]] = [(idx0, l0)]
             block_index_set: set[int] = {idx0}
             has_mathish = True
             prev = l0
@@ -1479,10 +1487,10 @@ def _replace_unnumbered_display_math_blocks(
             if len(block) >= min_lines and has_mathish:
                 first_line = block[0][1]
                 last_line = block[-1][1]
-                prev_idx: Optional[int] = None
-                prev_line: Optional[_Line] = None
-                next_idx: Optional[int] = None
-                next_line: Optional[_Line] = None
+                prev_idx: int | None = None
+                prev_line: _Line | None = None
+                next_idx: int | None = None
+                next_line: _Line | None = None
 
                 k = i - 1
                 while k >= 0:
@@ -1578,7 +1586,7 @@ def _replace_unnumbered_display_math_blocks(
     if not remove_idx and not updated and not placeholders:
         return lines
 
-    out: List[_Line] = []
+    out: list[_Line] = []
     for idx, l in enumerate(out_lines):
         if idx in remove_idx:
             continue
@@ -1588,12 +1596,12 @@ def _replace_unnumbered_display_math_blocks(
 
 
 def _merge_right_floating_math_into_left_lines(
-    lines: List[_Line],
+    lines: list[_Line],
     *,
     page_w: float,
     avg_h: float,
     config: ExtractionConfig,
-) -> List[_Line]:
+) -> list[_Line]:
     if not lines or page_w <= 0 or avg_h <= 0:
         return lines
 
@@ -1670,7 +1678,7 @@ def _merge_right_floating_math_into_left_lines(
     if not remove and not updated:
         return lines
 
-    out: List[_Line] = []
+    out: list[_Line] = []
     for k, l in enumerate(lines):
         if k in remove:
             continue
@@ -1679,13 +1687,13 @@ def _merge_right_floating_math_into_left_lines(
 
 
 def _drop_algorithm_blocks_in_lines(
-    lines: List[_Line],
+    lines: list[_Line],
     *,
     page_w: float,
     page_h: float,
     avg_h: float,
     config: ExtractionConfig,
-) -> List[_Line]:
+) -> list[_Line]:
     if not config.drop_algorithms or not lines or page_w <= 0 or page_h <= 0 or avg_h <= 0:
         return lines
 
@@ -1741,14 +1749,14 @@ def _drop_algorithm_blocks_in_lines(
 
 
 def _drop_figure_body_near_captions(
-    lines: List[_Line],
+    lines: list[_Line],
     *,
     page_index: int,
     page_w: float,
     page_h: float,
     avg_h: float,
     config: ExtractionConfig,
-) -> List[_Line]:
+) -> list[_Line]:
     """
     Drop non-prose figure/plot labels in a band above a "Figure N:" caption.
 
@@ -1776,7 +1784,7 @@ def _drop_figure_body_near_captions(
         band_y0 = max(0.0, float(cap.y0) - win)
         band_y1 = float(cap.y0)
         cap_col = _column_of(cap, page_w=page_w, config=config)
-        strong_candidates: List[_Line] = []
+        strong_candidates: list[_Line] = []
 
         for l in lines:
             if l.page_index != page_index or l is cap or l in drop:
@@ -1815,14 +1823,14 @@ def _drop_figure_body_near_captions(
 
 
 def _drop_table_body_lines_near_captions(
-    lines: List[_Line],
+    lines: list[_Line],
     *,
     page_index: int,
     page_w: float,
     page_h: float,
     avg_h: float,
     config: ExtractionConfig,
-) -> List[_Line]:
+) -> list[_Line]:
     """
     Drop table body cell text near a "Table N:" caption (line-level).
 
@@ -1850,7 +1858,7 @@ def _drop_table_body_lines_near_captions(
             (float(cap.y1), min(page_h, float(cap.y1) + win), "below"),
         ]
         for band_y0, band_y1, where in bands:
-            below_strong: List[_Line] = []
+            below_strong: list[_Line] = []
             for l in lines:
                 if l.page_index != page_index or l is cap or l in drop:
                     continue
@@ -1891,7 +1899,7 @@ def _drop_table_body_lines_near_captions(
     return [l for l in lines if l not in drop]
 
 
-def _merge_math_placeholders_into_previous(paras: List[_Paragraph], *, config: ExtractionConfig) -> List[_Paragraph]:
+def _merge_math_placeholders_into_previous(paras: list[_Paragraph], *, config: ExtractionConfig) -> list[_Paragraph]:
     """
     Merge a standalone display-math placeholder paragraph into the previous prose paragraph.
 
@@ -1901,7 +1909,7 @@ def _merge_math_placeholders_into_previous(paras: List[_Paragraph], *, config: E
     if not paras:
         return paras
 
-    out: List[_Paragraph] = []
+    out: list[_Paragraph] = []
     score_threshold = int(config.math_context_score_threshold)
 
     def is_math_placeholder(p: _Paragraph) -> bool:
@@ -1917,7 +1925,7 @@ def _merge_math_placeholders_into_previous(paras: List[_Paragraph], *, config: E
         # Accept both "[MATH] (1)" and "[MATH](1)" styles.
         return bool(re.search(r"\(\s*\d{1,3}(?:\.\d{1,2}|[a-z])?\s*\)", t))
 
-    def _find_prev_out_index() -> Optional[int]:
+    def _find_prev_out_index() -> int | None:
         j = len(out) - 1
         while j >= 0:
             cand = out[j]
@@ -1929,7 +1937,7 @@ def _merge_math_placeholders_into_previous(paras: List[_Paragraph], *, config: E
             j -= 1
         return None
 
-    def _find_next_index(start: int) -> Optional[int]:
+    def _find_next_index(start: int) -> int | None:
         k = start
         while k < len(paras):
             cand = paras[k]
@@ -1966,7 +1974,8 @@ def _merge_math_placeholders_into_previous(paras: List[_Paragraph], *, config: E
             prev_last = out[prev_out_idx].lines[-1]
             cur_first = p.lines[0]
             approx_w = max(prev_last.x1, cur_first.x1, 1.0)
-            avg_h = float(median([h for h in (prev_last.height, cur_first.height) if h > 0]) or [10.0])
+            _heights_prev = [h for h in (prev_last.height, cur_first.height) if h > 0]
+            avg_h = float(median(_heights_prev)) if _heights_prev else 10.0
             prev_score = _line_pair_continuity_score(
                 prev_last,
                 cur_first,
@@ -1979,7 +1988,8 @@ def _merge_math_placeholders_into_previous(paras: List[_Paragraph], *, config: E
             next_first = paras[next_idx].lines[0]
             cur_last = p.lines[-1]
             approx_w = max(next_first.x1, cur_last.x1, 1.0)
-            avg_h = float(median([h for h in (next_first.height, cur_last.height) if h > 0]) or [10.0])
+            _heights_next = [h for h in (next_first.height, cur_last.height) if h > 0]
+            avg_h = float(median(_heights_next)) if _heights_next else 10.0
             next_score = _line_pair_continuity_score(
                 cur_last,
                 next_first,
@@ -2036,7 +2046,7 @@ class _PageMetrics:
 
 
 def _compute_page_metrics(
-    lines: List[_Line],
+    lines: list[_Line],
     *,
     page_w: float,
     page_h: float,
@@ -2097,13 +2107,13 @@ def _is_page_number_line(
 
 
 def _filter_page_numbers(
-    lines: List[_Line],
+    lines: list[_Line],
     *,
     page_w: float,
     page_h: float,
     metrics: _PageMetrics,
     config: ExtractionConfig,
-) -> List[_Line]:
+) -> list[_Line]:
     return [
         l for l in lines
         if not _is_page_number_line(l, page_w=page_w, page_h=page_h, metrics=metrics, config=config)
@@ -2111,13 +2121,13 @@ def _filter_page_numbers(
 
 
 def _filter_narrow_tall_lines(
-    lines: List[_Line],
+    lines: list[_Line],
     *,
     page_w: float,
     page_h: float,
     metrics: _PageMetrics,
     config: ExtractionConfig,
-) -> List[_Line]:
+) -> list[_Line]:
     if not config.drop_narrow_tall_lines or page_w <= 0 or page_h <= 0:
         return lines
     band = metrics.band
@@ -2141,19 +2151,19 @@ def _filter_narrow_tall_lines(
 
 
 def _merge_same_baseline_lines(
-    lines: List[_Line],
+    lines: list[_Line],
     *,
     page_w: float,
     metrics: _PageMetrics,
     config: ExtractionConfig,
-) -> List[_Line]:
+) -> list[_Line]:
     avg_h = metrics.avg_h
     page_med_fs = metrics.page_med_fs
     if not config.same_baseline_merge or avg_h <= 0 or page_w <= 0:
         return lines
     y_tol = avg_h * float(config.same_baseline_y_tol_mult)
     by_yx = sorted(lines, key=lambda l: (l.y0, l.x0))
-    merged: List[_Line] = []
+    merged: list[_Line] = []
     i = 0
     while i < len(by_yx):
         cur = by_yx[i]
@@ -2208,13 +2218,13 @@ def _is_footnote_start(
 
 
 def _drop_footnotes(
-    lines: List[_Line],
+    lines: list[_Line],
     *,
     page_w: float,
     page_h: float,
     metrics: _PageMetrics,
     config: ExtractionConfig,
-) -> List[_Line]:
+) -> list[_Line]:
     if not config.drop_footnotes or page_h <= 0 or page_w <= 0:
         return lines
     avg_h = metrics.avg_h
@@ -2259,7 +2269,7 @@ def _drop_footnotes(
     return lines
 
 
-def _apply_drop_front_matter(lines: List[_Line], *, config: ExtractionConfig) -> List[_Line]:
+def _apply_drop_front_matter(lines: list[_Line], *, config: ExtractionConfig) -> list[_Line]:
     stop_re = re.compile(config.front_matter_stop_re, flags=re.IGNORECASE)
     stop_y = None
     for l in sorted(lines, key=lambda ln: (ln.y0, ln.x0)):
@@ -2275,24 +2285,24 @@ def _apply_drop_front_matter(lines: List[_Line], *, config: ExtractionConfig) ->
 
 
 def _assemble_paragraphs(
-    lines: List[_Line],
+    lines: list[_Line],
     *,
     page_w: float,
     page_h: float,
     metrics: _PageMetrics,
     config: ExtractionConfig,
-) -> List[_Paragraph]:
+) -> list[_Paragraph]:
     avg_h = metrics.avg_h
     median_w = metrics.median_w
     page_med_fs = metrics.page_med_fs
     with_col = [(l, _column_of(l, page_w=page_w, config=config)) for l in lines]
     with_col.sort(key=lambda t: (t[1], t[0].y0, t[0].x0))
-    paras: List[_Paragraph] = []
-    cur: List[_Line] = []
+    paras: list[_Paragraph] = []
+    cur: list[_Line] = []
     cur_is_caption = False
     cur_is_labelled_caption = False
     cur_caption_lines = 0
-    cur_col: Optional[int] = None
+    cur_col: int | None = None
 
     def flush() -> None:
         nonlocal cur, cur_is_caption, cur_is_labelled_caption, cur_caption_lines
@@ -2473,10 +2483,10 @@ def _build_paragraphs_for_page(
     page_index: int,
     page_w: float,
     page_h: float,
-    lines: List[_Line],
+    lines: list[_Line],
     config: ExtractionConfig,
-    drop_texts: Optional[set[str]] = None,
-) -> List[_Paragraph]:
+    drop_texts: set[str] | None = None,
+) -> list[_Paragraph]:
     if not lines:
         return []
     metrics = _compute_page_metrics(lines, page_w=page_w, page_h=page_h, config=config)
@@ -2517,28 +2527,28 @@ def _build_paragraphs_for_page(
 
 
 def _cross_page_merge(
-    paragraphs: List[_Paragraph],
+    paragraphs: list[_Paragraph],
     *,
-    page_sizes: Dict[int, Tuple[float, float]],
-    page_avg_line_height: Dict[int, float],
+    page_sizes: dict[int, tuple[float, float]],
+    page_avg_line_height: dict[int, float],
     config: ExtractionConfig,
-) -> List[_Paragraph]:
+) -> list[_Paragraph]:
     if not paragraphs:
         return paragraphs
 
-    def _first_line_on_page(para: _Paragraph, page_index: int) -> Optional[_Line]:
+    def _first_line_on_page(para: _Paragraph, page_index: int) -> _Line | None:
         candidates = [l for l in para.lines if l.page_index == page_index]
         if not candidates:
             return None
         return min(candidates, key=lambda l: (l.y0, l.x0))
 
-    def _last_line_on_page(para: _Paragraph, page_index: int) -> Optional[_Line]:
+    def _last_line_on_page(para: _Paragraph, page_index: int) -> _Line | None:
         candidates = [l for l in para.lines if l.page_index == page_index]
         if not candidates:
             return None
         return max(candidates, key=lambda l: (l.y1, l.x1))
 
-    def _has_same_page_prose_predecessor(out: List[_Paragraph], cur_para: _Paragraph, cur_first_page: int) -> bool:
+    def _has_same_page_prose_predecessor(out: list[_Paragraph], cur_para: _Paragraph, cur_first_page: int) -> bool:
         """
         If we already have a prose paragraph on the current page before `cur_para`,
         prefer staying within-page rather than forcing a cross-page merge.
@@ -2571,12 +2581,12 @@ def _cross_page_merge(
 
     def _best_prev_candidate_index(
         *,
-        out: List[_Paragraph],
+        out: list[_Paragraph],
         cur_para: _Paragraph,
         cur_first_page: int,
-        page_sizes: Dict[int, Tuple[float, float]],
+        page_sizes: dict[int, tuple[float, float]],
         config: ExtractionConfig,
-    ) -> Optional[int]:
+    ) -> int | None:
         """
         Pick the best previous paragraph to merge with a cross-page continuation.
 
@@ -2596,7 +2606,7 @@ def _cross_page_merge(
         if cur_first_line is None:
             return None
 
-        best_i: Optional[int] = None
+        best_i: int | None = None
         best_score = -1e9
         scan = int(config.cross_page_search_back)
         start = max(0, len(out) - scan)
@@ -2630,7 +2640,7 @@ def _cross_page_merge(
 
         return best_i
 
-    out: List[_Paragraph] = []
+    out: list[_Paragraph] = []
     for p in paragraphs:
         if not out:
             out.append(p)
@@ -2748,8 +2758,8 @@ def _cross_page_merge(
 def extract_paragraphs_pymupdf(
     pdf_path: str | Path,
     *,
-    config: Optional[ExtractionConfig] = None,
-) -> List[Dict[str, Any]]:
+    config: ExtractionConfig | None = None,
+) -> list[dict[str, Any]]:
     _require_pymupdf()
     cfg = config or ExtractionConfig()
     path = Path(pdf_path)
@@ -2765,8 +2775,8 @@ def extract_paragraphs_pymupdf(
 def extract_paragraphs_pymupdf_bytes(
     pdf_bytes: bytes,
     *,
-    config: Optional[ExtractionConfig] = None,
-) -> List[Dict[str, Any]]:
+    config: ExtractionConfig | None = None,
+) -> list[dict[str, Any]]:
     _require_pymupdf()
     cfg = config or ExtractionConfig()
     doc = fitz.open(stream=pdf_bytes, filetype="pdf")
@@ -2776,12 +2786,12 @@ def extract_paragraphs_pymupdf_bytes(
         doc.close()
 
 
-def _extract_from_doc(doc: Any, cfg: ExtractionConfig) -> List[Dict[str, Any]]:
+def _extract_from_doc(doc: Any, cfg: ExtractionConfig) -> list[dict[str, Any]]:
     # Extract lines per page first (dict output)
-    page_sizes: Dict[int, Tuple[float, float]] = {}
-    page_avg_h: Dict[int, float] = {}
-    page_paras: List[_Paragraph] = []
-    page_lines: Dict[int, List[_Line]] = {}
+    page_sizes: dict[int, tuple[float, float]] = {}
+    page_avg_h: dict[int, float] = {}
+    page_paras: list[_Paragraph] = []
+    page_lines: dict[int, list[_Line]] = {}
 
     for page_index in range(doc.page_count):
         page = doc.load_page(page_index)
@@ -2799,7 +2809,7 @@ def _extract_from_doc(doc: Any, cfg: ExtractionConfig) -> List[Dict[str, Any]]:
         margin_ratio = float(cfg.running_header_footer_margin_ratio)
         min_pages = int(cfg.running_header_footer_min_pages)
         min_len = int(cfg.running_header_footer_min_len)
-        page_bands: Dict[int, _BodyBand] = {}
+        page_bands: dict[int, _BodyBand] = {}
         if cfg.prefer_statistical_body_band:
             for page_no, lines in page_lines.items():
                 w, h = page_sizes.get(page_no, (0.0, 0.0))
@@ -2807,7 +2817,7 @@ def _extract_from_doc(doc: Any, cfg: ExtractionConfig) -> List[Dict[str, Any]]:
                     continue
                 page_bands[page_no] = _compute_body_band(lines, page_w=w, page_h=h, config=cfg)
 
-        counts: Dict[str, set[int]] = {}
+        counts: dict[str, set[int]] = {}
         for page_no, lines in page_lines.items():
             _w, h = page_sizes.get(page_no, (0.0, 0.0))
             if h <= 0:
@@ -2857,7 +2867,7 @@ def _extract_from_doc(doc: Any, cfg: ExtractionConfig) -> List[Dict[str, Any]]:
         page_paras = [p for p in page_paras if not _is_tiny_noise_paragraph(p, config=cfg)]
 
     # Assign global paragraph IDs deterministically and emit JSON-serializable dicts
-    out: List[Dict[str, Any]] = []
+    out: list[dict[str, Any]] = []
     for i, p in enumerate(page_paras):
         out.append(
             {
@@ -2867,17 +2877,17 @@ def _extract_from_doc(doc: Any, cfg: ExtractionConfig) -> List[Dict[str, Any]]:
                 "bboxes": p.bboxes_by_page(),
                 "_anchor": p.anchor_bbox(),
                 "is_caption": bool(p.is_caption),
-                "_median_font_size": float(median([l.font_size for l in p.lines if l.font_size > 0]) or [0.0]),
+                "_median_font_size": _safe_median_font_size(p.lines),
             }
         )
     return out
 
 
 def extract_paragraphs_from_pymupdf_dict(
-    pymupdf_dict: Dict[str, Any],
+    pymupdf_dict: dict[str, Any],
     *,
-    config: Optional[ExtractionConfig] = None,
-) -> List[Dict[str, Any]]:
+    config: ExtractionConfig | None = None,
+) -> list[dict[str, Any]]:
     """
     Extract paragraphs from an already-dumped PyMuPDF dict JSON.
 
@@ -2894,10 +2904,10 @@ def extract_paragraphs_from_pymupdf_dict(
     if not isinstance(pages, list):
         raise ValueError("invalid pymupdf_dict: missing 'pages' list")
 
-    page_sizes: Dict[int, Tuple[float, float]] = {}
-    page_avg_h: Dict[int, float] = {}
-    page_paras: List[_Paragraph] = []
-    page_lines: Dict[int, List[_Line]] = {}
+    page_sizes: dict[int, tuple[float, float]] = {}
+    page_avg_h: dict[int, float] = {}
+    page_paras: list[_Paragraph] = []
+    page_lines: dict[int, list[_Line]] = {}
 
     for p in pages:
         if not isinstance(p, dict):
@@ -2921,7 +2931,7 @@ def extract_paragraphs_from_pymupdf_dict(
         margin_ratio = float(cfg.running_header_footer_margin_ratio)
         min_pages = int(cfg.running_header_footer_min_pages)
         min_len = int(cfg.running_header_footer_min_len)
-        page_bands: Dict[int, _BodyBand] = {}
+        page_bands: dict[int, _BodyBand] = {}
         if cfg.prefer_statistical_body_band:
             for page_no, lines in page_lines.items():
                 w, h = page_sizes.get(page_no, (0.0, 0.0))
@@ -2929,7 +2939,7 @@ def extract_paragraphs_from_pymupdf_dict(
                     continue
                 page_bands[page_no] = _compute_body_band(lines, page_w=w, page_h=h, config=cfg)
 
-        counts: Dict[str, set[int]] = {}
+        counts: dict[str, set[int]] = {}
         for page_no, lines in page_lines.items():
             _w, h = page_sizes.get(page_no, (0.0, 0.0))
             if h <= 0:
@@ -2974,7 +2984,7 @@ def extract_paragraphs_from_pymupdf_dict(
     if cfg.drop_tiny_noise_paragraphs:
         page_paras = [p for p in page_paras if not _is_tiny_noise_paragraph(p, config=cfg)]
 
-    out: List[Dict[str, Any]] = []
+    out: list[dict[str, Any]] = []
     for i, para in enumerate(page_paras):
         out.append(
             {
@@ -2984,13 +2994,13 @@ def extract_paragraphs_from_pymupdf_dict(
                 "bboxes": para.bboxes_by_page(),
                 "_anchor": para.anchor_bbox(),
                 "is_caption": bool(para.is_caption),
-                "_median_font_size": float(median([l.font_size for l in para.lines if l.font_size > 0]) or [0.0]),
+                "_median_font_size": _safe_median_font_size(para.lines),
             }
         )
     return out
 
 
-def paragraphs_to_xml(paragraphs: Sequence[Dict[str, Any]]) -> str:
+def paragraphs_to_xml(paragraphs: Sequence[dict[str, Any]]) -> str:
     """
     Convert paragraph output into a simple deterministic XML (NOT TEI).
     """

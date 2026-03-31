@@ -3,18 +3,16 @@ from __future__ import annotations
 import io
 import re
 from collections import Counter
-from typing import Dict, Optional, Tuple
-
 
 try:  # Optional dependency (preferred).
-    from pypdf import PdfReader  # type: ignore
+    from pypdf import PdfReader
 except Exception:  # pragma: no cover
-    PdfReader = None  # type: ignore[assignment]
+    PdfReader = None  # type: ignore[misc,assignment]
 
 try:  # Optional dependency (fallback; often present when using PyMuPDF backend).
-    import fitz  # type: ignore
+    import fitz
 except Exception:  # pragma: no cover
-    fitz = None  # type: ignore[assignment]
+    fitz = None
 
 
 _BOX_RE = re.compile(
@@ -22,7 +20,7 @@ _BOX_RE = re.compile(
 )
 
 
-def get_pdf_page_sizes(pdf_bytes: bytes) -> Dict[int, Tuple[float, float]]:
+def get_pdf_page_sizes(pdf_bytes: bytes) -> dict[int, tuple[float, float]]:
     """
     Return per-page (width_pt, height_pt) sizes.
 
@@ -35,7 +33,7 @@ def get_pdf_page_sizes(pdf_bytes: bytes) -> Dict[int, Tuple[float, float]]:
     if PdfReader is not None:
         try:
             reader = PdfReader(io.BytesIO(pdf_bytes))
-            out: Dict[int, Tuple[float, float]] = {}
+            out: dict[int, tuple[float, float]] = {}
             for i, page in enumerate(reader.pages):
                 # Prefer CropBox as it matches viewer display area; fall back to MediaBox.
                 box = getattr(page, "cropbox", None) or getattr(page, "mediabox", None)
@@ -66,16 +64,16 @@ def get_pdf_page_sizes(pdf_bytes: bytes) -> Dict[int, Tuple[float, float]]:
     if fitz is not None:
         try:
             doc = fitz.open(stream=pdf_bytes, filetype="pdf")
-            out: Dict[int, Tuple[float, float]] = {}
+            fitz_out: dict[int, tuple[float, float]] = {}
             for i in range(doc.page_count):
                 page = doc.load_page(i)
                 w = float(page.rect.width)
                 h = float(page.rect.height)
                 if w > 0 and h > 0:
-                    out[i] = (w, h)
+                    fitz_out[i] = (w, h)
             doc.close()
-            if out:
-                return out
+            if fitz_out:
+                return fitz_out
         except Exception:
             pass
 
@@ -84,7 +82,7 @@ def get_pdf_page_sizes(pdf_bytes: bytes) -> Dict[int, Tuple[float, float]]:
     return {0: est} if est else {}
 
 
-def estimate_dominant_pdf_page_size(pdf_bytes: bytes) -> Optional[Tuple[float, float]]:
+def estimate_dominant_pdf_page_size(pdf_bytes: bytes) -> tuple[float, float] | None:
     """
     Best-effort dominant page size estimation from raw PDF bytes (no parsing).
     Prefer CropBox over MediaBox. Returns (width_pt, height_pt) in PDF points, or None.
@@ -136,7 +134,7 @@ def estimate_dominant_pdf_page_size(pdf_bytes: bytes) -> Optional[Tuple[float, f
     return best_key
 
 
-def get_page_size(page_sizes: Dict[int, Tuple[float, float]], page_index: int) -> Optional[Tuple[float, float]]:
+def get_page_size(page_sizes: dict[int, tuple[float, float]], page_index: int) -> tuple[float, float] | None:
     if page_index in page_sizes:
         return page_sizes[page_index]
     if 0 in page_sizes:

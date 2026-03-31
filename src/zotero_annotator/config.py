@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from functools import lru_cache
-from typing import Callable, ClassVar, Literal, Optional, Union
+from typing import ClassVar, Literal
 
 from pydantic import Field, ValidationError
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -70,7 +71,7 @@ class CoreSettings(_BaseEnvSettings):
     # Keep only the high-impact switches/thresholds env-configurable for now.
     # Filter out non-body text by minimum median font size.
     # 0 disables the filter; "auto" derives a threshold from the current PDF.
-    para_min_median_coord_h: Union[float, Literal["auto"]] = Field(
+    para_min_median_coord_h: float | Literal["auto"] = Field(
         "auto",
         alias="PARA_MIN_MEDIAN_COORD_H",
     )
@@ -126,7 +127,7 @@ class TranslatorSettings(_BaseEnvSettings):
         "deepl", alias="TRANSLATOR_PROVIDER"
     )
     target_lang: str = Field(..., min_length=1, alias="TARGET_LANG")
-    source_lang: Optional[str] = Field(None, alias="SOURCE_LANG")
+    source_lang: str | None = Field(None, alias="SOURCE_LANG")
 
 
 class DeepLSettings(_BaseEnvSettings):

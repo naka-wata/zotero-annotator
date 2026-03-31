@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
-from typing import Any, Dict, Iterator, List, Literal, Optional, Sequence, Set
+from typing import Any, Literal
 
 import httpx
 
@@ -17,10 +18,13 @@ from zotero_annotator.models.results import (
 )
 from zotero_annotator.services.annotation_position import build_note_position
 from zotero_annotator.services.paragraphs import Paragraph
-from zotero_annotator.services.pymupdf_adapter import extract_paragraphs_from_pdf_bytes
 from zotero_annotator.services.pdf_pages import get_pdf_page_sizes
-from zotero_annotator.services.translators.base import TranslationError, TranslationInput, Translator
-
+from zotero_annotator.services.pymupdf_adapter import extract_paragraphs_from_pdf_bytes
+from zotero_annotator.services.translators.base import (
+    TranslationError,
+    TranslationInput,
+    Translator,
+)
 
 AnnotationMode = Literal["note", "highlight"]
 
@@ -64,14 +68,14 @@ def _build_paragraph_translation_input(
 class _ItemResolution:
     """Single item resolved from an explicit key or tag iteration."""
     item_key: str
-    item: Optional[Dict[str, Any]]
-    lookup_error: Optional[httpx.HTTPError]
+    item: dict[str, Any] | None
+    lookup_error: httpx.HTTPError | None
 
 
 def _iter_target_items(
     zotero: ZoteroClient,
     *,
-    item_keys: Optional[Sequence[str]],
+    item_keys: Sequence[str] | None,
     tag: str,
     max_items: int,
 ) -> Iterator[_ItemResolution]:
@@ -82,8 +86,12 @@ def _iter_target_items(
     - tag: iterates Zotero items tagged with `tag`; no lookup failure possible.
     """
     if item_keys:
-        seen: Set[str] = set()
-        ordered_keys = [k for k in item_keys if k and not (k in seen or seen.add(k))]
+        seen: set[str] = set()
+        ordered_keys: list[str] = []
+        for k in item_keys:
+            if k and k not in seen:
+                seen.add(k)
+                ordered_keys.append(k)
         for index, item_key in enumerate(ordered_keys):
             if index >= max_items:
                 break
@@ -106,7 +114,7 @@ def _extract_paragraphs_from_pdf(
     title: str,
     zotero: ZoteroClient,
     settings: CoreSettings,
-) -> tuple[list[Paragraph], Set[str]] | ItemResult:
+) -> tuple[list[Paragraph], set[str]] | ItemResult:
     """段落抽出と既存タグ収集の共通処理。
 
     成功時は (paragraphs, existing_tags) を返す。
@@ -150,7 +158,7 @@ def _extract_paragraphs_from_pdf(
 
 def _fetch_item_and_pdf(
     item_key: str,
-    item: Dict[str, Any],
+    item: dict[str, Any],
     zotero: ZoteroClient,
 ) -> tuple[str, str] | ItemResult:
     """item/PDF 取得の共通処理（children 取得・PDF 特定まで）。
@@ -191,9 +199,9 @@ def run_translate_existing_notes(
     translator: Translator,
     source_lang: str,
     target_lang: str,
-    override_tag: Optional[str] = None,
-    item_keys: Optional[Sequence[str]] = None,
-) -> List[TranslationItemResult]:
+    override_tag: str | None = None,
+    item_keys: Sequence[str] | None = None,
+) -> list[TranslationItemResult]:
     """
     Translate existing Zotero annotation note bodies in-place.
 
@@ -208,7 +216,7 @@ def run_translate_existing_notes(
         scope=settings.z_scope,
         library_id=settings.z_id,
     )
-    results: List[TranslationItemResult] = []
+    results: list[TranslationItemResult] = []
     tag = override_tag or settings.z_base_done_tag
     try:
         for resolution in _iter_target_items(zotero, item_keys=item_keys, tag=tag, max_items=max_items):
@@ -226,6 +234,7 @@ def run_translate_existing_notes(
                     )
                 )
                 continue
+            assert resolution.item is not None
             results.append(
                 process_item_translate_existing_notes(
                     settings,
@@ -247,14 +256,14 @@ def process_item_translate_existing_notes(
     settings: CoreSettings,
     *,
     zotero: ZoteroClient,
-    item: Dict[str, Any],
+    item: dict[str, Any],
     dry_run: bool,
     translator: Translator,
     source_lang: str,
     target_lang: str,
 ) -> TranslationItemResult:
     item_key = item.get("key") or ""
-    warnings: List[str] = []
+    warnings: list[str] = []
 
     fetch_result = _fetch_item_and_pdf(item_key, item, zotero)
     if isinstance(fetch_result, ItemResult):
@@ -306,7 +315,7 @@ def process_item_translate_existing_notes(
 
 
 def _translate_pending_annotations(
-    annotations: list,
+    annotations: list[dict[str, Any]],
     translator: Translator,
     settings: CoreSettings,
     *,
@@ -315,10 +324,10 @@ def _translate_pending_annotations(
     item_key: str,
     source_lang: str,
     target_lang: str,
-) -> tuple[List[str], List[str], dict]:
+) -> tuple[list[str], list[str], dict[str, Any]]:
     """annotations をフィルタリングして翻訳を実行し (warnings, errors, stats) を返す。"""
-    warnings: List[str] = []
-    errors: List[str] = []
+    warnings: list[str] = []
+    errors: list[str] = []
     targeted = 0
     processed = 0
     updated = 0
@@ -423,11 +432,11 @@ def _translate_pending_annotations(
 def _update_item_tag_if_complete(
     zotero: ZoteroClient,
     write_enabled: bool,
-    item: Dict[str, Any],
+    item: dict[str, Any],
     item_key: str,
     pdf_key: str,
     settings: CoreSettings,
-    warnings: List[str],
+    warnings: list[str],
 ) -> None:
     """翻訳完了時にアイテムタグを base-done → translated へ更新する。"""
     if not write_enabled:
@@ -459,7 +468,7 @@ def _count_pending_annotations_for_translation(
     item_key: str,
     pdf_key: str,
     pending_tag: str,
-) -> tuple[Optional[int], Optional[str]]:
+) -> tuple[int | None, str | None]:
     try:
         latest_annotations = list(zotero.iter_annotations(parent_key=pdf_key, limit_per_page=100))
     except httpx.HTTPError as exc:
@@ -484,13 +493,13 @@ def run_no_translation(
     max_items: int,
     max_paragraphs_per_item: int,
     annotation_mode: AnnotationMode = "note",
-    override_tag: Optional[str] = None,
-    item_keys: Optional[Sequence[str]] = None,
-    translator: Optional[Translator] = None,
+    override_tag: str | None = None,
+    item_keys: Sequence[str] | None = None,
+    translator: Translator | None = None,
     source_lang: str = "",
     target_lang: str = "",
     delete_broken_annotations: bool = False,
-) -> List[ItemResult]:
+) -> list[ItemResult]:
     """
     No-translation pipeline (翻訳なしパイプライン).
 
@@ -505,7 +514,7 @@ def run_no_translation(
         scope=settings.z_scope,
         library_id=settings.z_id,
     )
-    results: List[ItemResult] = []
+    results: list[ItemResult] = []
     tag = override_tag or settings.z_target_tag
     try:
         for resolution in _iter_target_items(zotero, item_keys=item_keys, tag=tag, max_items=max_items):
@@ -524,6 +533,7 @@ def run_no_translation(
                     )
                 )
                 continue
+            assert resolution.item is not None
             results.append(
                 process_item_no_translation(
                     settings,
@@ -546,9 +556,9 @@ def run_no_translation(
 
 def _build_annotation_payloads(
     paragraphs: Sequence[Paragraph],
-    existing_tags: Set[str],
+    existing_tags: set[str],
     pdf_key: str,
-    translator: Optional[Translator],
+    translator: Translator | None,
     settings: CoreSettings,
     *,
     item_key: str,
@@ -556,15 +566,15 @@ def _build_annotation_payloads(
     source_lang: str,
     target_lang: str,
     annotation_mode: AnnotationMode,
-    page_sizes: Dict[int, tuple[float, float]] | None,
+    page_sizes: dict[int, tuple[float, float]] | None,
     max_paragraphs: int,
-) -> List[Dict[str, Any]] | ItemResult:
+) -> list[dict[str, Any]] | ItemResult:
     """
     Build annotation payloads for each paragraph.
     Returns the list on success, or an ItemResult on translation error.
     (段落ごとに注釈ペイロードを構築する。成功時はリスト、翻訳エラー時は ItemResult を返す)
     """
-    planned_payloads: List[Dict[str, Any]] = []
+    planned_payloads: list[dict[str, Any]] = []
     dup = 0
     processed = 0
 
@@ -627,8 +637,8 @@ def _run_self_healing(
     zotero: ZoteroClient,
     settings: CoreSettings,
     paragraphs: list[Paragraph],
-    page_sizes: Dict[int, tuple[float, float]] | None,
-    existing_tags: Set[str],
+    page_sizes: dict[int, tuple[float, float]] | None,
+    existing_tags: set[str],
     *,
     dry_run: bool,
     delete_broken_annotations: bool,
@@ -702,25 +712,25 @@ def _run_self_healing(
 
 
 def _write_and_finalize(
-    planned_payloads: list[dict],
+    planned_payloads: list[dict[str, Any]],
     paragraphs: list[Paragraph],
     item_key: str,
     pdf_key: str,
     title: str,
-    item: Dict[str, Any],
+    item: dict[str, Any],
     zotero: ZoteroClient,
     settings: CoreSettings,
-    existing_tags: Set[str],
+    existing_tags: set[str],
     warnings: list[str],
     *,
     max_paragraphs: int,
     dry_run: bool,
-    translator: Optional[Translator],
+    translator: Translator | None,
 ) -> ItemResult:
     """Zotero への書き込みとタグ自動確定を行い ItemResult を返す。"""
     processed = min(max_paragraphs, len(paragraphs))
     dup = processed - len(planned_payloads)
-    planned_dedup_tags: Set[str] = {
+    planned_dedup_tags: set[str] = {
         t["tag"]
         for payload in planned_payloads
         for t in payload.get("tags", [])
@@ -784,17 +794,17 @@ def process_item_no_translation(
     settings: CoreSettings,
     *,
     zotero: ZoteroClient,
-    item: Dict[str, Any],
+    item: dict[str, Any],
     dry_run: bool,
     max_paragraphs: int,
     annotation_mode: AnnotationMode,
-    translator: Optional[Translator],
+    translator: Translator | None,
     source_lang: str,
     target_lang: str,
     delete_broken_annotations: bool,
 ) -> ItemResult:
     item_key = item.get("key") or ""
-    warnings: List[str] = []
+    warnings: list[str] = []
 
     fetch_result = _fetch_item_and_pdf(item_key, item, zotero)
     if isinstance(fetch_result, ItemResult):
@@ -843,14 +853,14 @@ def process_item_no_translation(
     )
 
 
-def delete_broken_annotations_for_pdf(zotero: ZoteroClient, pdf_key: str) -> tuple[int, List[str]]:
+def delete_broken_annotations_for_pdf(zotero: ZoteroClient, pdf_key: str) -> tuple[int, list[str]]:
     """
     Delete annotation items that are missing required fields in Zotero 7 DB:
     annotationSortIndex / annotationPageLabel / annotationPosition.
 
     (必須フィールド欠落の注釈を削除する)
     """
-    warnings: List[str] = []
+    warnings: list[str] = []
     deleted = 0
 
     for ann in zotero.iter_annotations(parent_key=pdf_key, limit_per_page=100):
@@ -908,18 +918,18 @@ def repair_broken_annotations_for_pdf(
     zotero: ZoteroClient,
     pdf_key: str,
     *,
-    paragraphs: List[Paragraph],
+    paragraphs: list[Paragraph],
     dedup_prefix: str,
-    page_sizes: Dict[int, tuple[float, float]] | None = None,
-) -> tuple[int, List[str]]:
+    page_sizes: dict[int, tuple[float, float]] | None = None,
+) -> tuple[int, list[str]]:
     """
     Repair broken annotations that have a para:<hash> tag matching current paragraphs.
     (paraタグで段落に紐づけできる壊れ注釈を修復する)
     """
-    warnings: List[str] = []
+    warnings: list[str] = []
     repaired = 0
 
-    pos_by_tag: Dict[str, Dict[str, str]] = {}
+    pos_by_tag: dict[str, dict[str, str]] = {}
     for p in paragraphs:
         note_pos = build_note_position(p, page_sizes=page_sizes)
         patch = {
@@ -965,8 +975,8 @@ def repair_broken_annotations_for_pdf(
 
 
 def _create_annotations_resilient(
-    zotero: ZoteroClient, payloads: List[Dict[str, Any]], *, batch_size: int
-) -> tuple[int, List[str]]:
+    zotero: ZoteroClient, payloads: list[dict[str, Any]], *, batch_size: int
+) -> tuple[int, list[str]]:
     """
     Create annotations in smaller batches to reduce partial failure impact.
     Falls back to per-item create for failed indices if Zotero returns them.
@@ -977,7 +987,7 @@ def _create_annotations_resilient(
         batch_size = 1
 
     created_total = 0
-    warnings: List[str] = []
+    warnings: list[str] = []
 
     for start in range(0, len(payloads), batch_size):
         chunk = payloads[start : start + batch_size]
@@ -1002,15 +1012,15 @@ def _create_annotations_resilient(
     return created_total, warnings
 
 
-def _summarize_zotero_create_response(resp: Any, *, planned: int) -> tuple[int, List[int], List[str]]:
+def _summarize_zotero_create_response(resp: Any, *, planned: int) -> tuple[int, list[int], list[str]]:
     """
     Zotero batch create may return 200 with partial failures.
     This helper returns (created_count, failed_indices, warnings).
 
     (Zoteroの一括作成は成功/失敗が混在しうるためサマリ化する)
     """
-    warnings: List[str] = []
-    failed_indices: List[int] = []
+    warnings: list[str] = []
+    failed_indices: list[int] = []
 
     if isinstance(resp, list):
         # Some endpoints may return created items list.
@@ -1023,7 +1033,7 @@ def _summarize_zotero_create_response(resp: Any, *, planned: int) -> tuple[int, 
         created = len(successful) if isinstance(successful, dict) else 0
         if isinstance(failed, dict) and failed:
             # Keep message short; include up to 3 failures.
-            samples = []
+            samples: list[str] = []
             for k, v in list(failed.items()):
                 try:
                     failed_indices.append(int(k))
@@ -1048,9 +1058,9 @@ def _summarize_zotero_create_response(resp: Any, *, planned: int) -> tuple[int, 
     return planned, failed_indices, warnings
 
 
-def collect_existing_tags(zotero: ZoteroClient, pdf_key: str) -> Set[str]:
+def collect_existing_tags(zotero: ZoteroClient, pdf_key: str) -> set[str]:
     # Collect all tag strings from existing annotations (既存注釈のタグ文字列を収集)
-    out: Set[str] = set()
+    out: set[str] = set()
     for ann in zotero.iter_annotations(parent_key=pdf_key, limit_per_page=100):
         for t in zotero.extract_tag_names(ann):
             out.add(t)
@@ -1079,7 +1089,7 @@ def _maybe_append_source_snippet(*, translated: str, source: str, enabled: bool,
     return f"{translated}\n\nSRC: {snippet}"
 
 
-def _detect_annotation_body_field(data: Dict[str, Any]) -> str:
+def _detect_annotation_body_field(data: dict[str, Any]) -> str:
     # Prefer annotationComment for annotation items; fall back to note body when needed.
     if "annotationComment" in data:
         return "annotationComment"
@@ -1095,12 +1105,12 @@ def _apply_translated_annotation_update(
     item_key: str,
     annotation_key: str,
     body_field: str,
-    annotation_data: Dict[str, Any],
+    annotation_data: dict[str, Any],
     version: Any,
     translated_text: str,
     pending_tag: str,
     translated_tag: str,
-) -> tuple[int, Optional[str], Optional[str]]:
+) -> tuple[int, str | None, str | None]:
     if not write_enabled:
         return (
             0,
@@ -1113,9 +1123,9 @@ def _apply_translated_annotation_update(
     patch.setdefault("itemType", "annotation")
     patch[body_field] = translated_text
     current_tags = [
-        t.get("tag")
+        t["tag"]
         for t in (annotation_data.get("tags") or [])
-        if isinstance(t, dict) and isinstance(t.get("tag"), str) and t.get("tag").strip()
+        if isinstance(t, dict) and isinstance(t.get("tag"), str) and t["tag"].strip()
     ]
     next_tags = zotero.merge_tags(
         current=current_tags,
@@ -1148,9 +1158,9 @@ def _apply_translated_annotation_update(
 _PARA_HASH_RE = re.compile(r"^[0-9a-f]{40}$")
 
 
-def _split_para_tags(*, tags: List[str], dedup_prefix: str) -> tuple[List[str], List[str]]:
-    valid: List[str] = []
-    invalid: List[str] = []
+def _split_para_tags(*, tags: list[str], dedup_prefix: str) -> tuple[list[str], list[str]]:
+    valid: list[str] = []
+    invalid: list[str] = []
     for tag in tags:
         if not isinstance(tag, str) or not tag.startswith(dedup_prefix):
             continue
@@ -1167,11 +1177,11 @@ def build_annotation_payload(
     paragraph: Paragraph,
     comment_text: str,
     pdf_key: str,
-    dedup_tags: List[str],
-    extra_tags: Optional[Sequence[str]] = None,
+    dedup_tags: list[str],
+    extra_tags: Sequence[str] | None = None,
     annotation_mode: AnnotationMode,
-    page_sizes: Dict[int, tuple[float, float]] | None = None,
-) -> Dict[str, Any]:
+    page_sizes: dict[int, tuple[float, float]] | None = None,
+) -> dict[str, Any]:
     # Build Zotero annotation payload (Zotero注釈ペイロード生成)
     tag_names = [
         tag
@@ -1218,13 +1228,13 @@ class DevAnnotateResult:
     item_key: str = ""
     pdf_key: str = ""
     paragraph_index: int = 0
-    page: int = 0
+    page: int | None = None
     paragraph_hash: str = ""
     title: str = ""
     dedup_tag: str = ""
-    payload: Optional[Dict[str, Any]] = None
-    error_stage: Optional[str] = None
-    error_detail: Optional[str] = None
+    payload: dict[str, Any] | None = None
+    error_stage: str | None = None
+    error_detail: str | None = None
 
 
 def _fetch_paragraphs_for_dev(
@@ -1232,7 +1242,7 @@ def _fetch_paragraphs_for_dev(
     zotero: ZoteroClient,
     settings: Any,
     item_key: str,
-) -> tuple[str, str, bytes, list] | DevAnnotateResult:
+) -> tuple[str, str, bytes, list[Paragraph]] | DevAnnotateResult:
     """item → PDF → paragraphs を取得して返す。失敗時は DevAnnotateResult(error) を返す。"""
 
     def err(stage: str, detail: str) -> DevAnnotateResult:
@@ -1282,10 +1292,10 @@ def run_dev_annotate(
     paragraph_index: int,
     read_only: bool,
     translate: bool,
-    annotation_mode: Optional[str],
-    translator: Optional[Translator] = None,
-    source_lang: Optional[str] = None,
-    target_lang: Optional[str] = None,
+    annotation_mode: str | None,
+    translator: Translator | None = None,
+    source_lang: str | None = None,
+    target_lang: str | None = None,
 ) -> DevAnnotateResult:
     """1段落だけ注釈するビジネスロジック（dev annotate コマンド用）。"""
 
@@ -1328,7 +1338,7 @@ def run_dev_annotate(
     except httpx.HTTPError as exc:
         return err("Zotero connection failed", f"annotations fetch failed pdf_key={pdf_key} detail={exc}")
 
-    existing_tags: Set[str] = set()
+    existing_tags: set[str] = set()
     for ann in existing:
         for t in zotero.extract_tag_names(ann):
             existing_tags.add(t)
@@ -1372,14 +1382,14 @@ class DevTranslateResult:
     item_key: str = ""
     pdf_key: str = ""
     paragraph_index: int = 0
-    page: int = 0
+    page: int | None = None
     provider: str = ""
     target_lang: str = ""
     title: str = ""
     source_text: str = ""
     translated_text: str = ""
-    error_stage: Optional[str] = None
-    error_detail: Optional[str] = None
+    error_stage: str | None = None
+    error_detail: str | None = None
 
 
 def run_dev_translate(

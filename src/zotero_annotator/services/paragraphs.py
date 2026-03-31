@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import List, Optional
 
 
 @dataclass
@@ -17,6 +16,6 @@ class ParagraphCoord:
 class Paragraph:
     text: str
     hash: str
-    dedup_hashes: List[str]
-    coords: List[ParagraphCoord]
-    page: Optional[int]
+    dedup_hashes: list[str]
+    coords: list[ParagraphCoord]
+    page: int | None
