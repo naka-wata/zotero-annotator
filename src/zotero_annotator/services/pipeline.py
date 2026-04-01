@@ -210,15 +210,14 @@ def run_translate_existing_notes(
     - Update only the body field in place (本文のみ更新)
     - Never create new annotations (新規注釈は作らない)
     """
-    zotero = ZoteroClient(
+    results: list[TranslationItemResult] = []
+    tag = override_tag or settings.z_base_done_tag
+    with ZoteroClient(
         base_url=settings.zotero_base_url,
         api_key=settings.z_api_key,
         scope=settings.z_scope,
         library_id=settings.z_id,
-    )
-    results: list[TranslationItemResult] = []
-    tag = override_tag or settings.z_base_done_tag
-    try:
+    ) as zotero:
         for resolution in _iter_target_items(zotero, item_keys=item_keys, tag=tag, max_items=max_items):
             if resolution.lookup_error is not None:
                 results.append(
@@ -246,8 +245,6 @@ def run_translate_existing_notes(
                     target_lang=target_lang,
                 )
             )
-    finally:
-        zotero.close()
 
     return results
 
@@ -380,9 +377,14 @@ def _translate_pending_annotations(
                 f"kind={exc.kind} status={exc.status_code}: {exc}"
             )
             break
+        except (httpx.HTTPStatusError, httpx.RequestError) as exc:
+            errors.append(
+                f"stage=translate item_key={item_key} annotation_key={ann_key} reason=http_error: {exc}"
+            )
+            break
         except Exception as exc:
             errors.append(
-                f"stage=translate translation_unexpected_error item_key={item_key} annotation_key={ann_key}: {exc}"
+                f"stage=translate item_key={item_key} annotation_key={ann_key} reason=unexpected_error: {exc}"
             )
             break
         processed += 1
@@ -508,15 +510,14 @@ def run_no_translation(
     - Parse paragraphs via PyMuPDF (PyMuPDFで段落抽出)
     - Create note/highlight annotations with para:<hash> tag (注釈作成＋重複防止タグ)
     """
-    zotero = ZoteroClient(
+    results: list[ItemResult] = []
+    tag = override_tag or settings.z_target_tag
+    with ZoteroClient(
         base_url=settings.zotero_base_url,
         api_key=settings.z_api_key,
         scope=settings.z_scope,
         library_id=settings.z_id,
-    )
-    results: list[ItemResult] = []
-    tag = override_tag or settings.z_target_tag
-    try:
+    ) as zotero:
         for resolution in _iter_target_items(zotero, item_keys=item_keys, tag=tag, max_items=max_items):
             if resolution.lookup_error is not None:
                 results.append(
@@ -548,8 +549,6 @@ def run_no_translation(
                     delete_broken_annotations=delete_broken_annotations,
                 )
             )
-    finally:
-        zotero.close()
 
     return results
 
@@ -1037,7 +1036,7 @@ def _summarize_zotero_create_response(resp: Any, *, planned: int) -> tuple[int, 
             for k, v in list(failed.items()):
                 try:
                     failed_indices.append(int(k))
-                except Exception:
+                except ValueError:
                     pass
                 if len(samples) >= 3:
                     continue
@@ -1141,17 +1140,17 @@ def _apply_translated_annotation_update(
             version=version if isinstance(version, int) else None,
         )
         return 1, None, None
-    except httpx.HTTPError as exc:
+    except (httpx.HTTPStatusError, httpx.RequestError) as exc:
         return (
             0,
             None,
-            f"stage=update annotation_update_failed item_key={item_key} annotation_key={annotation_key}: {exc}",
+            f"stage=update item_key={item_key} annotation_key={annotation_key} reason=http_error: {exc}",
         )
     except Exception as exc:
         return (
             0,
             None,
-            f"stage=update annotation_update_unexpected_error item_key={item_key} annotation_key={annotation_key}: {exc}",
+            f"stage=update item_key={item_key} annotation_key={annotation_key} reason=unexpected_error: {exc}",
         )
 
 

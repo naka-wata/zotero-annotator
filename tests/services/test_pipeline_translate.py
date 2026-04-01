@@ -124,7 +124,7 @@ class TestTranslatePendingAnnotations:
         warnings, errors, stats = _call(annotations, mock_zotero_client, mock_settings, mock_translator)
 
         assert len(errors) == 1
-        assert "translation_unexpected_error" in errors[0]
+        assert "reason=unexpected_error" in errors[0]
 
     def test_empty_source_text_adds_warning(
         self, mock_zotero_client: MagicMock, mock_settings: MagicMock, mock_translator: MagicMock
