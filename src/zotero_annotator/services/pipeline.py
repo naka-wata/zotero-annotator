@@ -380,9 +380,14 @@ def _translate_pending_annotations(
                 f"kind={exc.kind} status={exc.status_code}: {exc}"
             )
             break
+        except (httpx.HTTPStatusError, httpx.RequestError) as exc:
+            errors.append(
+                f"stage=translate item_key={item_key} annotation_key={ann_key} reason=http_error: {exc}"
+            )
+            break
         except Exception as exc:
             errors.append(
-                f"stage=translate translation_unexpected_error item_key={item_key} annotation_key={ann_key}: {exc}"
+                f"stage=translate item_key={item_key} annotation_key={ann_key} reason=unexpected_error: {exc}"
             )
             break
         processed += 1
@@ -1037,7 +1042,7 @@ def _summarize_zotero_create_response(resp: Any, *, planned: int) -> tuple[int, 
             for k, v in list(failed.items()):
                 try:
                     failed_indices.append(int(k))
-                except Exception:
+                except ValueError:
                     pass
                 if len(samples) >= 3:
                     continue
@@ -1141,17 +1146,17 @@ def _apply_translated_annotation_update(
             version=version if isinstance(version, int) else None,
         )
         return 1, None, None
-    except httpx.HTTPError as exc:
+    except (httpx.HTTPStatusError, httpx.RequestError) as exc:
         return (
             0,
             None,
-            f"stage=update annotation_update_failed item_key={item_key} annotation_key={annotation_key}: {exc}",
+            f"stage=update item_key={item_key} annotation_key={annotation_key} reason=http_error: {exc}",
         )
     except Exception as exc:
         return (
             0,
             None,
-            f"stage=update annotation_update_unexpected_error item_key={item_key} annotation_key={annotation_key}: {exc}",
+            f"stage=update item_key={item_key} annotation_key={annotation_key} reason=unexpected_error: {exc}",
         )
 
 

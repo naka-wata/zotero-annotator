@@ -238,8 +238,11 @@ def _run_annotations_command(
             target_lang=target_lang,
             delete_broken_annotations=do_delete_broken,
         )
+    except (httpx.HTTPStatusError, httpx.RequestError) as exc:
+        fail("stage=pipeline reason=http_error", str(exc))
+        return
     except Exception as exc:
-        fail("Pipeline crashed", str(exc))
+        fail("stage=pipeline reason=unexpected_error", str(exc))
         return
 
     _render_run_results(results=results, translate=translate)
@@ -360,8 +363,11 @@ def translate(
             override_tag=override_tag,
             item_keys=item_keys,
         )
+    except (httpx.HTTPStatusError, httpx.RequestError) as exc:
+        fail("stage=pipeline reason=http_error", str(exc))
+        return
     except Exception as exc:
-        fail("Pipeline crashed", str(exc))
+        fail("stage=pipeline reason=unexpected_error", str(exc))
         return
 
     console.print(
@@ -594,7 +600,7 @@ def dev_dump_pymupdf_raw_text(
 
     try:
         import fitz
-    except Exception as exc:
+    except ImportError as exc:
         fail("PyMuPDF import failed", f"detail={exc}")
         return
 
@@ -704,7 +710,7 @@ def dev_dump_pymupdf_dict(
 
     try:
         import fitz
-    except Exception as exc:
+    except ImportError as exc:
         fail("PyMuPDF import failed", f"detail={exc}")
         return
 
@@ -1264,7 +1270,7 @@ def dev_audit_annotations(
             elif isinstance(position, str) and position.strip():
                 try:
                     json.loads(position)
-                except Exception:
+                except json.JSONDecodeError:
                     invalid_pos.append(ann_key)
             else:
                 missing_pos.append(ann_key)
