@@ -3,24 +3,18 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 import httpx
-from tenacity import (
-    retry,
-    retry_if_exception_type,
-    stop_after_attempt,
-    wait_exponential,
-)
 
 from zotero_annotator.services.translators.base import (
+    BaseRetryTranslator,
     TranslationError,
     TranslationErrorKind,
     TranslationInput,
     TranslationResult,
-    Translator,
 )
 
 
 @dataclass(frozen=True)
-class DeepLTranslator(Translator):
+class DeepLTranslator(BaseRetryTranslator):
     # Minimal DeepL translator client (DeepL翻訳クライアント最小実装)
     api_key: str
     api_url: str = "https://api-free.deepl.com"
@@ -62,29 +56,6 @@ class DeepLTranslator(Translator):
             raise TranslationError("temporary", "DeepL returned empty translation", provider="deepl")
         return TranslationResult(text=translated_text, provider="deepl", model="")
 
-    def translate(self, input: TranslationInput) -> TranslationResult:
-        # Retry only on temporary/rate-limit errors (temporary/rate_limitのみリトライ)
-        @retry(
-            retry=retry_if_exception_type(_RetryableDeepLError),
-            stop=stop_after_attempt(self.max_retries),
-            wait=wait_exponential(multiplier=0.5, min=0.5, max=8),
-            reraise=True,
-        )
-        def _run() -> TranslationResult:
-            try:
-                return self._translate_once(input=input)
-            except TranslationError as exc:
-                if exc.kind in ("temporary", "rate_limit") and self.max_retries > 1:
-                    raise _RetryableDeepLError(exc)
-                raise
-
-        try:
-            return _run()
-        except TranslationError:
-            raise
-        except _RetryableDeepLError as exc:
-            raise exc.inner
-
 
 def _classify_deepl_error(status_code: int) -> TranslationErrorKind:
     # DeepL error classification (DeepLエラー分類)
@@ -110,10 +81,3 @@ def _safe_deepl_error_detail(resp: httpx.Response) -> str:
         pass
     text = (resp.text or "").strip()
     return text[:200] if text else "unknown"
-
-
-class _RetryableDeepLError(Exception):
-    # Wrapper used to allow tenacity retry on selected TranslationError kinds (tenacity用ラッパ)
-    def __init__(self, inner: TranslationError) -> None:
-        super().__init__(str(inner))
-        self.inner = inner
