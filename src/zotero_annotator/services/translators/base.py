@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Callable, Literal, Protocol
+from typing import Literal, Protocol
 
 from tenacity import (
     retry,
