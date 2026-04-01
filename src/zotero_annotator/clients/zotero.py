@@ -18,6 +18,12 @@ class ZoteroClient:
     def close(self) -> None:
         self._client.close()
 
+    def __enter__(self) -> ZoteroClient:
+        return self
+
+    def __exit__(self, *args: object) -> None:
+        self.close()
+
     # Internal method to build headers for API requests (APIリクエスト用のヘッダーを作成する)
     def _headers(self) -> dict[str, str]:
         return {

@@ -210,15 +210,14 @@ def run_translate_existing_notes(
     - Update only the body field in place (本文のみ更新)
     - Never create new annotations (新規注釈は作らない)
     """
-    zotero = ZoteroClient(
+    results: list[TranslationItemResult] = []
+    tag = override_tag or settings.z_base_done_tag
+    with ZoteroClient(
         base_url=settings.zotero_base_url,
         api_key=settings.z_api_key,
         scope=settings.z_scope,
         library_id=settings.z_id,
-    )
-    results: list[TranslationItemResult] = []
-    tag = override_tag or settings.z_base_done_tag
-    try:
+    ) as zotero:
         for resolution in _iter_target_items(zotero, item_keys=item_keys, tag=tag, max_items=max_items):
             if resolution.lookup_error is not None:
                 results.append(
@@ -246,8 +245,6 @@ def run_translate_existing_notes(
                     target_lang=target_lang,
                 )
             )
-    finally:
-        zotero.close()
 
     return results
 
@@ -513,15 +510,14 @@ def run_no_translation(
     - Parse paragraphs via PyMuPDF (PyMuPDFで段落抽出)
     - Create note/highlight annotations with para:<hash> tag (注釈作成＋重複防止タグ)
     """
-    zotero = ZoteroClient(
+    results: list[ItemResult] = []
+    tag = override_tag or settings.z_target_tag
+    with ZoteroClient(
         base_url=settings.zotero_base_url,
         api_key=settings.z_api_key,
         scope=settings.z_scope,
         library_id=settings.z_id,
-    )
-    results: list[ItemResult] = []
-    tag = override_tag or settings.z_target_tag
-    try:
+    ) as zotero:
         for resolution in _iter_target_items(zotero, item_keys=item_keys, tag=tag, max_items=max_items):
             if resolution.lookup_error is not None:
                 results.append(
@@ -553,8 +549,6 @@ def run_no_translation(
                     delete_broken_annotations=delete_broken_annotations,
                 )
             )
-    finally:
-        zotero.close()
 
     return results
 
