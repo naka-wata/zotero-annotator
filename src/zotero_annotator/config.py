@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from functools import lru_cache
 from typing import ClassVar, Literal
 
-from pydantic import Field, ValidationError
+from pydantic import Field, ValidationError, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 TranslatorProviderInput = Literal["deepl", "chatgpt", "openai", "local_llm"]
@@ -43,6 +43,9 @@ class _BaseEnvSettings(BaseSettings):
     )
 
 
+_PLACEHOLDER = "..."
+
+
 class ZoteroSettings(_BaseEnvSettings):
     """Zotero 接続に関する設定."""
 
@@ -50,6 +53,20 @@ class ZoteroSettings(_BaseEnvSettings):
     z_id: str = Field(..., min_length=1, alias="Z_ID")
     z_api_key: str = Field(..., min_length=1, alias="Z_API_KEY")
     zotero_base_url: str = "https://api.zotero.org"
+
+    @model_validator(mode="after")
+    def _check_required_not_placeholder(self) -> ZoteroSettings:
+        placeholders = {
+            "Z_ID": self.z_id,
+            "Z_API_KEY": self.z_api_key,
+        }
+        unset = [k for k, v in placeholders.items() if v == _PLACEHOLDER]
+        if unset:
+            raise ValueError(
+                f"必須設定が未入力です: {', '.join(unset)}。"
+                " .env.example をコピーして .env を作成し、実際の値を設定してください。"
+            )
+        return self
 
 
 class ParagraphExtractionSettings(_BaseEnvSettings):
@@ -91,6 +108,16 @@ class ParagraphExtractionSettings(_BaseEnvSettings):
     para_skip_references: bool = Field(True, alias="PARA_SKIP_REFERENCES")
     # Skip table-body-like paragraphs (dense numeric / short tokens).
     para_skip_table_like: bool = Field(True, alias="PARA_SKIP_TABLE_LIKE")
+
+    @model_validator(mode="after")
+    def _check_para_chars_range(self) -> ParagraphExtractionSettings:
+        if self.para_min_chars > self.para_max_chars:
+            raise ValueError(
+                f"PARA_MIN_CHARS ({self.para_min_chars}) が "
+                f"PARA_MAX_CHARS ({self.para_max_chars}) を超えています。"
+                " PARA_MIN_CHARS <= PARA_MAX_CHARS になるよう設定してください。"
+            )
+        return self
 
 
 class AnnotationSettings(_BaseEnvSettings):
