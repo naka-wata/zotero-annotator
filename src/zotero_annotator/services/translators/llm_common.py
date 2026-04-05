@@ -11,7 +11,9 @@ from zotero_annotator.services.translators.base import (
     TranslationInput,
     TranslationResult,
 )
-from zotero_annotator.services.translators.prompts import build_overlap_translation_messages
+from zotero_annotator.services.translators.prompts import (
+    build_overlap_translation_messages,
+)
 
 _TRANSLATION_PREFIX_RE = re.compile(
     r"^(?:here is the translation|translation|translated(?:\s+text)?|output)\s*[:：]?\s*",

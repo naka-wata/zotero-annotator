@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from functools import lru_cache
-from typing import Callable, ClassVar, Literal, Optional, Union
+from typing import ClassVar, Literal
 
-from pydantic import Field, ValidationError
+from pydantic import Field, ValidationError, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 TranslatorProviderInput = Literal["deepl", "chatgpt", "openai", "local_llm"]
@@ -42,35 +43,42 @@ class _BaseEnvSettings(BaseSettings):
     )
 
 
-class CoreSettings(_BaseEnvSettings):
-    # .env から設定項目を読み込む
-    # 必須設定の場合は ... を指定し、デフォルト値がある場合は適宜設定する
+_PLACEHOLDER = "..."
 
-    # Zotero
+
+class ZoteroSettings(_BaseEnvSettings):
+    """Zotero 接続に関する設定."""
+
     z_scope: Literal["user", "group"] = Field(..., alias="Z_SCOPE")
     z_id: str = Field(..., min_length=1, alias="Z_ID")
     z_api_key: str = Field(..., min_length=1, alias="Z_API_KEY")
-    z_target_tag: str = Field("to-translate", min_length=1, alias="Z_TARGET_TAG")
-    z_base_done_tag: str = Field("base-done", min_length=1, alias="Z_BASE_DONE_TAG")
-    z_done_tag: str = Field("translated", min_length=1, alias="Z_DONE_TAG")
-    z_remove_tag: str = Field("to-translate", min_length=1, alias="Z_REMOVE_TAG")
-    ann_pending_translation_tag: str = Field(
-        "za:translate", min_length=1, alias="ANN_PENDING_TRANSLATION_TAG"
-    )
-    ann_translated_tag: str = Field(
-        "za:translated", min_length=1, alias="ANN_TRANSLATED_TAG"
-    )
+    zotero_base_url: str = "https://api.zotero.org"
 
-    # Pipeline
+    @model_validator(mode="after")
+    def _check_required_not_placeholder(self) -> ZoteroSettings:
+        placeholders = {
+            "Z_ID": self.z_id,
+            "Z_API_KEY": self.z_api_key,
+        }
+        unset = [k for k, v in placeholders.items() if v == _PLACEHOLDER]
+        if unset:
+            raise ValueError(
+                f"必須設定が未入力です: {', '.join(unset)}。"
+                " .env.example をコピーして .env を作成し、実際の値を設定してください。"
+            )
+        return self
+
+
+class ParagraphExtractionSettings(_BaseEnvSettings):
+    """PDF 段落抽出に関する設定."""
+
     dedup_tag_prefix: str = "para:"
     para_min_chars: int = Field(60, alias="PARA_MIN_CHARS")
     para_max_chars: int = Field(1500, alias="PARA_MAX_CHARS")
 
-    # Extraction params that materially change which paragraphs enter translation.
-    # Keep only the high-impact switches/thresholds env-configurable for now.
     # Filter out non-body text by minimum median font size.
     # 0 disables the filter; "auto" derives a threshold from the current PDF.
-    para_min_median_coord_h: Union[float, Literal["auto"]] = Field(
+    para_min_median_coord_h: float | Literal["auto"] = Field(
         "auto",
         alias="PARA_MIN_MEDIAN_COORD_H",
     )
@@ -91,19 +99,40 @@ class CoreSettings(_BaseEnvSettings):
     # Strip plot/axis label noise that sometimes appears before "Figure N:" in a paragraph.
     para_strip_plot_axis_prefix: ClassVar[bool] = True
     # Skip figure/table captions as standalone notes (e.g., "Figure 4: ...", "Table 1: ...").
-    # If a caption is mixed with prose in the same paragraph, the caption prefix is removed and the prose is kept.
     para_skip_captions: bool = Field(False, alias="PARA_SKIP_CAPTIONS")
     # Drop inline citation markers like "[23]" or "[3, 4]" from extracted text.
-    # Default: keep citations in body text.
     para_drop_citations: bool = Field(False, alias="PARA_DROP_CITATIONS")
     # Drop footnote markers like "layer1." -> "layer." (only when it looks like a footnote marker).
-    # Default: keep as-is (some papers use it as meaningful index).
     para_drop_footnote_markers: bool = Field(False, alias="PARA_DROP_FOOTNOTE_MARKERS")
     # Skip references/bibliography section paragraphs (and anything after a "References" heading).
     para_skip_references: bool = Field(True, alias="PARA_SKIP_REFERENCES")
-    # Skip table-body-like paragraphs (dense numeric / short tokens), since tables are usually not
-    # helpful as note annotations. Captions are handled separately.
+    # Skip table-body-like paragraphs (dense numeric / short tokens).
     para_skip_table_like: bool = Field(True, alias="PARA_SKIP_TABLE_LIKE")
+
+    @model_validator(mode="after")
+    def _check_para_chars_range(self) -> ParagraphExtractionSettings:
+        if self.para_min_chars > self.para_max_chars:
+            raise ValueError(
+                f"PARA_MIN_CHARS ({self.para_min_chars}) が "
+                f"PARA_MAX_CHARS ({self.para_max_chars}) を超えています。"
+                " PARA_MIN_CHARS <= PARA_MAX_CHARS になるよう設定してください。"
+            )
+        return self
+
+
+class AnnotationSettings(_BaseEnvSettings):
+    """注釈・タグ運用に関する設定."""
+
+    z_target_tag: str = Field("to-translate", min_length=1, alias="Z_TARGET_TAG")
+    z_base_done_tag: str = Field("base-done", min_length=1, alias="Z_BASE_DONE_TAG")
+    z_done_tag: str = Field("translated", min_length=1, alias="Z_DONE_TAG")
+    z_remove_tag: str = Field("to-translate", min_length=1, alias="Z_REMOVE_TAG")
+    ann_pending_translation_tag: str = Field(
+        "za:translate", min_length=1, alias="ANN_PENDING_TRANSLATION_TAG"
+    )
+    ann_translated_tag: str = Field(
+        "za:translated", min_length=1, alias="ANN_TRANSLATED_TAG"
+    )
 
     # Annotation output mode (what to create in Zotero)
     # - note: create note annotations (default)
@@ -116,8 +145,15 @@ class CoreSettings(_BaseEnvSettings):
     # Logging
     log_level: ClassVar[str] = "INFO"
 
-    # Fixed base URL for Zotero API.
-    zotero_base_url: str = "https://api.zotero.org"
+
+class CoreSettings(ZoteroSettings, ParagraphExtractionSettings, AnnotationSettings):
+    """全設定の合成クラス（後方互換）.
+
+    各関心事ごとのクラスは個別に使用可能:
+    - ZoteroSettings: Zotero 接続設定
+    - ParagraphExtractionSettings: PDF 段落抽出設定
+    - AnnotationSettings: 注釈・タグ運用設定
+    """
 
 
 class TranslatorSettings(_BaseEnvSettings):
@@ -126,7 +162,7 @@ class TranslatorSettings(_BaseEnvSettings):
         "deepl", alias="TRANSLATOR_PROVIDER"
     )
     target_lang: str = Field(..., min_length=1, alias="TARGET_LANG")
-    source_lang: Optional[str] = Field(None, alias="SOURCE_LANG")
+    source_lang: str | None = Field(None, alias="SOURCE_LANG")
 
 
 class DeepLSettings(_BaseEnvSettings):

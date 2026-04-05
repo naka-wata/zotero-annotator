@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from typing import Any, Dict, Iterable, List, Optional
+from collections.abc import Iterable
+from typing import Any, cast
 
 import httpx
 
@@ -17,8 +18,14 @@ class ZoteroClient:
     def close(self) -> None:
         self._client.close()
 
+    def __enter__(self) -> ZoteroClient:
+        return self
+
+    def __exit__(self, *args: object) -> None:
+        self.close()
+
     # Internal method to build headers for API requests (APIリクエスト用のヘッダーを作成する)
-    def _headers(self) -> Dict[str, str]:
+    def _headers(self) -> dict[str, str]:
         return {
             "Zotero-API-Key": self.api_key,
             "Zotero-API-Version": "3",
@@ -32,7 +39,7 @@ class ZoteroClient:
 
 
     # Internal method to perform GET requests (GETリクエストを実行する)
-    def _get(self, path: str, params: Optional[Dict[str, Any]] = None) -> httpx.Response:
+    def _get(self, path: str, params: dict[str, Any] | None = None) -> httpx.Response:
         url = f"{self.base_url}/{path.lstrip('/')}"
         return self._client.get(url, headers=self._headers(), params=params)
 
@@ -42,7 +49,7 @@ class ZoteroClient:
         return self._client.post(url, headers=self._headers(), json=json_body)
 
     # Internal method to perform PUT requests (PUTリクエストを実行する)
-    def _put(self, path: str, json_body: Any, headers: Optional[Dict[str, str]] = None) -> httpx.Response:
+    def _put(self, path: str, json_body: Any, headers: dict[str, str] | None = None) -> httpx.Response:
         url = f"{self.base_url}/{path.lstrip('/')}"
         merged = self._headers()
         if headers:
@@ -50,7 +57,7 @@ class ZoteroClient:
         return self._client.put(url, headers=merged, json=json_body)
 
     # Internal method to perform DELETE requests (DELETEリクエストを実行する)
-    def _delete(self, path: str, headers: Optional[Dict[str, str]] = None) -> httpx.Response:
+    def _delete(self, path: str, headers: dict[str, str] | None = None) -> httpx.Response:
         url = f"{self.base_url}/{path.lstrip('/')}"
         merged = self._headers()
         if headers:
@@ -58,7 +65,7 @@ class ZoteroClient:
         return self._client.delete(url, headers=merged)
 
     # List items by tag (タグのついた論文をリストする)
-    def list_items_by_tag(self, tag: str, limit: int = 25, start: int = 0) -> List[Dict[str, Any]]:
+    def list_items_by_tag(self, tag: str, limit: int = 25, start: int = 0) -> list[dict[str, Any]]:
         params = {
             "include": "data",
             "limit": limit,
@@ -67,35 +74,34 @@ class ZoteroClient:
         }
         resp = self._get(f"{self._library_path()}/items", params=params)
         resp.raise_for_status()
-        return resp.json()
+        return cast(list[dict[str, Any]], resp.json())
 
     # Iterate over all items by tag with pagination (タグのついた論文をlist_items_by_tagで繰り返し取得する)
-    def iter_items_by_tag(self, tag: str, limit_per_page: int = 100) -> Iterable[Dict[str, Any]]:
+    def iter_items_by_tag(self, tag: str, limit_per_page: int = 100) -> Iterable[dict[str, Any]]:
         start = 0
         while True:
             items = self.list_items_by_tag(tag=tag, limit=limit_per_page, start=start)
             if not items:
                 break
-            for item in items:
-                yield item
+            yield from items
             start += len(items)
-            
+
     # List children items of a parent item (親アイテムの子アイテム(pdfやスナップショット)をリストする)
-    def list_children(self, parent_key: str) -> List[Dict[str, Any]]:
+    def list_children(self, parent_key: str) -> list[dict[str, Any]]:
         params = {"include": "data"}
         resp = self._get(f"{self._library_path()}/items/{parent_key}/children", params=params)
         resp.raise_for_status()
-        return resp.json()
+        return cast(list[dict[str, Any]], resp.json())
 
     # Get a single item by key (アイテムをキーで取得する)
-    def get_item(self, item_key: str) -> Dict[str, Any]:
+    def get_item(self, item_key: str) -> dict[str, Any]:
         params = {"include": "data"}
         resp = self._get(f"{self._library_path()}/items/{item_key}", params=params)
         resp.raise_for_status()
-        return resp.json()
+        return cast(dict[str, Any], resp.json())
 
     # Pick the first PDF attachment from children items (list_childrenの子アイテムの中から最初のPDF添付ファイルを選択する)
-    def pick_pdf_attachment(self, children: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    def pick_pdf_attachment(self, children: list[dict[str, Any]]) -> dict[str, Any] | None:
         for item in children:
             content_type = (item.get("data") or {}).get("contentType") or ""
             if "pdf" in content_type.lower():
@@ -114,7 +120,7 @@ class ZoteroClient:
         return resp.content
 
     # List annotations for a parent item (親アイテムの 注釈:annotation をリストする)
-    def list_annotations(self, parent_key: str, *, limit: int = 100, start: int = 0) -> List[Dict[str, Any]]:
+    def list_annotations(self, parent_key: str, *, limit: int = 100, start: int = 0) -> list[dict[str, Any]]:
         params = {
             "include": "data",
             "format": "json",
@@ -129,25 +135,24 @@ class ZoteroClient:
         return [i for i in items if (i.get("data") or {}).get("itemType") == "annotation"]
 
     # Iterate over all annotations with pagination (注釈をページングしながら全件取得する)
-    def iter_annotations(self, parent_key: str, limit_per_page: int = 100) -> Iterable[Dict[str, Any]]:
+    def iter_annotations(self, parent_key: str, limit_per_page: int = 100) -> Iterable[dict[str, Any]]:
         start = 0
         while True:
             items = self.list_annotations(parent_key=parent_key, limit=limit_per_page, start=start)
             if not items:
                 break
-            for item in items:
-                yield item
+            yield from items
             start += len(items)
 
     # Create annotations (注釈:annotation を作成する)
-    def create_annotations(self, annotations: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    def create_annotations(self, annotations: list[dict[str, Any]]) -> list[dict[str, Any]]:
         resp = self._post(f"{self._library_path()}/items", json_body=annotations)
         resp.raise_for_status()
-        return resp.json()
+        return cast(list[dict[str, Any]], resp.json())
 
     # Update an item with concurrency control (アイテムを安全に更新する)
-    def update_item(self, item_key: str, data: Dict[str, Any], version: Optional[int]) -> Dict[str, Any]:
-        headers: Dict[str, str] = {}
+    def update_item(self, item_key: str, data: dict[str, Any], version: int | None) -> dict[str, Any]:
+        headers: dict[str, str] = {}
         if version is not None:
             headers["If-Unmodified-Since-Version"] = str(version)
         resp = self._put(f"{self._library_path()}/items/{item_key}", json_body=data, headers=headers)
@@ -156,18 +161,18 @@ class ZoteroClient:
         # (Zoteroの更新APIは成功時に204でボディなしの場合がある)
         if resp.status_code == 204 or not resp.content:
             return {}
-        return resp.json()
+        return cast(dict[str, Any], resp.json())
 
     # Delete an item with concurrency control (アイテムを安全に削除する)
-    def delete_item(self, item_key: str, version: Optional[int]) -> None:
-        headers: Dict[str, str] = {}
+    def delete_item(self, item_key: str, version: int | None) -> None:
+        headers: dict[str, str] = {}
         if version is not None:
             headers["If-Unmodified-Since-Version"] = str(version)
         resp = self._delete(f"{self._library_path()}/items/{item_key}", headers=headers)
         resp.raise_for_status()
 
     # Update item tags safely (アイテムのタグを安全に更新する)
-    def update_item_tags(self, item_key: str, tags: List[str]) -> Dict[str, Any]:
+    def update_item_tags(self, item_key: str, tags: list[str]) -> dict[str, Any]:
         item = self.get_item(item_key)
         data = dict(item.get("data") or {})
         data["tags"] = [{"tag": t} for t in tags]
@@ -176,13 +181,13 @@ class ZoteroClient:
 
     # Extract tag names from an item (アイテムからタグ名を抽出する)
     @staticmethod
-    def extract_tag_names(item: Dict[str, Any]) -> List[str]:
+    def extract_tag_names(item: dict[str, Any]) -> list[str]:
         tags = (item.get("data") or {}).get("tags") or []
-        return [t.get("tag") for t in tags if isinstance(t, dict) and t.get("tag")]
+        return [t["tag"] for t in tags if isinstance(t, dict) and t.get("tag")]
 
     # Merge current tags with additions and removals (現在のタグに追加と削除を反映させる)
     @staticmethod
-    def merge_tags(current: List[str], add: Iterable[str], remove: Iterable[str]) -> List[str]:
+    def merge_tags(current: list[str], add: Iterable[str], remove: Iterable[str]) -> list[str]:
         next_tags = set(current)
         next_tags.update(t for t in add if t)
         next_tags.difference_update(t for t in remove if t)

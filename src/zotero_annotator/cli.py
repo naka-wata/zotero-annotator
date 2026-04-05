@@ -3,9 +3,8 @@ from __future__ import annotations
 import base64
 import json
 from hashlib import sha1
-import statistics
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import Any, NoReturn
 
 import httpx
 import typer
@@ -15,86 +14,34 @@ from rich.table import Table
 
 from zotero_annotator.clients.zotero import ZoteroClient
 from zotero_annotator.config import get_core_settings, get_translation_runtime
-from zotero_annotator.pipeline import (
-    build_annotation_payload,
+from zotero_annotator.models.results import ItemResult
+from zotero_annotator.services.annotation_position import build_note_position
+from zotero_annotator.services.pdf_pages import get_pdf_page_sizes
+from zotero_annotator.services.pipeline import (
+    run_dev_annotate,
+    run_dev_translate,
     run_no_translation,
     run_translate_existing_notes,
 )
-from zotero_annotator.services.annotation_position import build_note_position
-from zotero_annotator.services.paragraphs import Paragraph
-from zotero_annotator.services.paragraph_extractor import extract_paragraphs_from_pdf_bytes
-from zotero_annotator.services.pdf_pages import get_pdf_page_sizes
-from zotero_annotator.services.pymupdf_paragraphs import ExtractionConfig as PyMuPDFExtractionConfig
+from zotero_annotator.services.pymupdf_adapter import extract_paragraphs_from_pdf_bytes
+from zotero_annotator.services.pymupdf_paragraphs import (
+    ExtractionConfig as PyMuPDFExtractionConfig,
+)
 from zotero_annotator.services.pymupdf_paragraphs import (
     extract_paragraphs_from_pymupdf_dict,
     extract_paragraphs_pymupdf_bytes,
     paragraphs_to_xml,
 )
-from zotero_annotator.services.translators.base import TranslationError, TranslationInput
+from zotero_annotator.services.translators.base import Translator
 from zotero_annotator.services.translators.factory import build_translator
-
 
 app = typer.Typer(add_completion=False)
 dev_app = typer.Typer(help="Development helpers / 開発用コマンド")
 app.add_typer(dev_app, name="dev")
 console = Console()
 
-_SOURCE_SNIPPET_CHARS = 10
 _SEARCH_TABLE_TRUNCATE_CHARS = 80
 
-
-def _build_source_snippet(text: str, *, chars: int) -> str:
-    s = " ".join((text or "").split()).strip()
-    if not s:
-        return ""
-    if len(s) <= (chars * 2 + 10):
-        return s
-    head = s[:chars].rstrip()
-    tail = s[-chars:].lstrip()
-    return f"{head} … {tail}"
-
-
-def _maybe_append_source_snippet(*, translated: str, source: str, enabled: bool, chars: int) -> str:
-    # Backward-compatible wrapper: we now always include the snippet when translation is enabled.
-    snippet = _build_source_snippet(source, chars=chars)
-    if not snippet:
-        return translated
-    return f"{translated}\n\nSRC: {snippet}"
-
-
-def _build_translation_input(
-    *,
-    current_paragraph: str,
-    source_lang: str,
-    target_lang: str,
-    previous_paragraph: str = "",
-    next_paragraph: str = "",
-) -> TranslationInput:
-    return TranslationInput(
-        previous_paragraph=previous_paragraph,
-        current_paragraph=current_paragraph,
-        next_paragraph=next_paragraph,
-        source_lang=source_lang,
-        target_lang=target_lang,
-    )
-
-
-def _build_paragraph_translation_input(
-    paragraphs: list[Paragraph],
-    index: int,
-    *,
-    source_lang: str,
-    target_lang: str,
-) -> TranslationInput:
-    previous_paragraph = paragraphs[index - 1].text if index > 0 else ""
-    next_paragraph = paragraphs[index + 1].text if index + 1 < len(paragraphs) else ""
-    return _build_translation_input(
-        previous_paragraph=previous_paragraph,
-        current_paragraph=paragraphs[index].text,
-        next_paragraph=next_paragraph,
-        source_lang=source_lang,
-        target_lang=target_lang,
-    )
 
 
 def _truncate_for_table(value: str, *, max_chars: int) -> str:
@@ -115,7 +62,7 @@ def _search_sort_key(item_key: str, matched_tags_by_item_key: dict[str, list[str
 # Search command to list target papers quickly (対象論文を確認する検索コマンド)
 @app.command()
 def search(
-    tag: Optional[List[str]] = typer.Option(
+    tag: list[str] | None = typer.Option(
         None,
         "--tag",
         help="Target tag to OR with base tag (repeatable) / 対象タグをOR追加（複数指定可）",
@@ -149,7 +96,7 @@ def search(
     )
     try:
         matched_tags_by_item_key: dict[str, list[str]] = {}
-        items_by_key: dict[str, dict] = {}
+        items_by_key: dict[str, dict[str, Any]] = {}
         for target_tag in tags_to_search:
             for item in zotero.iter_items_by_tag(tag=target_tag, limit_per_page=100):
                 key = item.get("key") or ""
@@ -201,8 +148,8 @@ def search(
 # Main run command for the annotation pipeline (アノテーション処理パイプラインの実行コマンド)
 def _validate_run_options(
     *,
-    tag: Optional[str],
-    item_keys: Optional[List[str]],
+    tag: str | None,
+    item_keys: list[str] | None,
     max_items: int,
     delete_broken: bool,
     keep_broken: bool,
@@ -216,7 +163,7 @@ def _validate_run_options(
         raise typer.BadParameter("Specify at most one of --delete-broken or --keep-broken")
 
 
-def _build_translation_runtime(*, translate: bool) -> Tuple[Optional[object], str, str]:
+def _build_translation_runtime(*, translate: bool) -> tuple[Translator | None, str, str]:
     if not translate:
         return None, "", ""
 
@@ -225,7 +172,7 @@ def _build_translation_runtime(*, translate: bool) -> Tuple[Optional[object], st
     return translator, translation_runtime.source_lang, translation_runtime.target_lang
 
 
-def _render_run_results(*, results: list[object], translate: bool) -> None:
+def _render_run_results(*, results: list[ItemResult], translate: bool) -> None:
     # Print per-item summary (論文ごとの実行結果を表示)
     for r in results:
         if r.skipped_reason:
@@ -241,15 +188,15 @@ def _render_run_results(*, results: list[object], translate: bool) -> None:
 
 def _run_annotations_command(
     *,
-    tag: Optional[str],
-    item_keys: Optional[List[str]],
+    tag: str | None,
+    item_keys: list[str] | None,
     max_items: int,
     read_only: bool,
     translate: bool,
     delete_broken: bool,
     keep_broken: bool,
 ) -> None:
-    def fail(stage: str, detail: str) -> None:
+    def fail(stage: str, detail: str) -> NoReturn:
         console.print(f"[red]ERROR[/red] {stage}: {detail}")
         raise typer.Exit(code=1)
 
@@ -291,8 +238,11 @@ def _run_annotations_command(
             target_lang=target_lang,
             delete_broken_annotations=do_delete_broken,
         )
+    except (httpx.HTTPStatusError, httpx.RequestError) as exc:
+        fail("stage=pipeline reason=http_error", str(exc))
+        return
     except Exception as exc:
-        fail("Pipeline crashed", str(exc))
+        fail("stage=pipeline reason=unexpected_error", str(exc))
         return
 
     _render_run_results(results=results, translate=translate)
@@ -300,8 +250,8 @@ def _run_annotations_command(
 
 @app.command()
 def run(
-    tag: Optional[str] = typer.Option(None, "--tag", help="Target tag override / 対象タグを上書き"),
-    item_keys: Optional[List[str]] = typer.Option(
+    tag: str | None = typer.Option(None, "--tag", help="Target tag override / 対象タグを上書き"),
+    item_keys: list[str] | None = typer.Option(
         None,
         "--item-key",
         help="Target item key (repeatable) / 対象item-key（複数指定可）",
@@ -335,8 +285,8 @@ def run(
 
 @app.command()
 def base(
-    tag: Optional[str] = typer.Option(None, "--tag", help="Target tag override / 対象タグを上書き"),
-    item_keys: Optional[List[str]] = typer.Option(
+    tag: str | None = typer.Option(None, "--tag", help="Target tag override / 対象タグを上書き"),
+    item_keys: list[str] | None = typer.Option(
         None,
         "--item-key",
         help="Target item key (repeatable) / 対象item-key（複数指定可）",
@@ -370,7 +320,7 @@ def base(
 
 @app.command()
 def translate(
-    item_keys: Optional[List[str]] = typer.Option(
+    item_keys: list[str] | None = typer.Option(
         None,
         "--item-key",
         help="Target item key (repeatable) / 対象item-key（複数指定可）",
@@ -384,7 +334,7 @@ def translate(
     if max_items < 1:
         raise typer.BadParameter("--max-items must be >= 1")
 
-    def fail(stage: str, detail: str) -> None:
+    def fail(stage: str, detail: str) -> NoReturn:
         console.print(f"[red]ERROR[/red] {stage}: {detail}")
         raise typer.Exit(code=1)
 
@@ -413,8 +363,11 @@ def translate(
             override_tag=override_tag,
             item_keys=item_keys,
         )
+    except (httpx.HTTPStatusError, httpx.RequestError) as exc:
+        fail("stage=pipeline reason=http_error", str(exc))
+        return
     except Exception as exc:
-        fail("Pipeline crashed", str(exc))
+        fail("stage=pipeline reason=unexpected_error", str(exc))
         return
 
     console.print(
@@ -450,25 +403,20 @@ def dev_annotate(
         "--translate/--no-translate",
         help="Translate before annotating / 注釈前に翻訳する",
     ),
-    annotation_mode: Optional[str] = typer.Option(
+    annotation_mode: str | None = typer.Option(
         None,
         "--annotation-mode",
         help="Override output mode (note/highlight) / 出力モード上書き",
     ),
 ) -> None:
-    
     """Annotate one paragraph for position checks (位置検証用に1段落だけ注釈)."""
-    # Validate paragraph index (段落インデックスのバリデーション)
     if paragraph_index < 0:
         raise typer.BadParameter("--paragraph-index must be >= 0")
+    if annotation_mode and annotation_mode not in ("note", "highlight"):
+        raise typer.BadParameter("--annotation-mode must be one of: note, highlight")
 
-    # Print a staged error and exit with non-zero code (段階別エラーを表示して終了)
-    def fail(stage: str, detail: str) -> None:
-        console.print(f"[red]ERROR[/red] {stage}: {detail}")
-        raise typer.Exit(code=1)
-
-    # Load settings and create clients (設定読み込みとクライアント作成)
     settings = get_core_settings()
+    translator, source_lang, target_lang = _build_translation_runtime(translate=translate)
     zotero = ZoteroClient(
         base_url=settings.zotero_base_url,
         api_key=settings.z_api_key,
@@ -476,147 +424,36 @@ def dev_annotate(
         library_id=settings.z_id,
     )
     try:
-        # Check target item existence early (対象アイテムの存在を先に確認)
-        try:
-            item = zotero.get_item(item_key)
-        except httpx.HTTPStatusError as exc:
-            status = exc.response.status_code if exc.response is not None else "unknown"
-            fail("Zotero item lookup failed", f"item_key={item_key} status={status}")
-        except httpx.HTTPError as exc:
-            fail("Zotero connection failed", f"item_key={item_key} detail={exc}")
-
-        item_title = (item.get("data") or {}).get("title") or ""
-
-        # Resolve PDF attachment from the target item (対象アイテムからPDF添付を解決)
-        try:
-            children = zotero.list_children(item_key)
-        except httpx.HTTPError as exc:
-            fail("Zotero connection failed", f"children fetch failed item_key={item_key} detail={exc}")
-
-        pdf = zotero.pick_pdf_attachment(children)
-        if not pdf:
-            fail("PDF attachment missing", f"item_key={item_key}")
-        pdf_key = pdf.get("key") or ""
-
-        # Download PDF and extract paragraphs via PyMuPDF (PDF取得→PyMuPDFで段落抽出)
-        try:
-            pdf_bytes = zotero.download_attachment(zotero.build_file_url(pdf_key))
-        except httpx.HTTPError as exc:
-            fail("Zotero connection failed", f"pdf download failed pdf_key={pdf_key} detail={exc}")
-
-        page_sizes = get_pdf_page_sizes(pdf_bytes)
-
-        try:
-            paragraphs = extract_paragraphs_from_pdf_bytes(pdf_bytes, settings=settings)
-        except (ValueError, RuntimeError, httpx.HTTPError) as exc:
-            fail("Paragraph extraction failed", str(exc))
-
-        if not paragraphs:
-            fail("No paragraphs extracted", f"item_key={item_key} pdf_key={pdf_key} paragraphs=0")
-
-        # Validate selected paragraph index (指定段落インデックスの妥当性確認)
-        if paragraph_index >= len(paragraphs):
-            fail(
-                "Paragraph index out of range",
-                f"item_key={item_key} paragraph_index={paragraph_index} paragraphs={len(paragraphs)}",
-            )
-        p = paragraphs[paragraph_index]
-        dedup_tags = [f"{settings.dedup_tag_prefix}{h}" for h in (p.dedup_hashes or [p.hash])]
-
-        # Optional: translate paragraph text for annotation comment (必要なら段落本文を翻訳して注釈コメントにする)
-        source_text = p.text
-        comment_text = source_text
-        if translate:
-            translation_runtime = get_translation_runtime()
-            translator = build_translator()
-            source_lang = translation_runtime.source_lang
-            target_lang = translation_runtime.target_lang
-            try:
-                comment_text = translator.translate(
-                    _build_paragraph_translation_input(
-                        paragraphs,
-                        paragraph_index,
-                        source_lang=source_lang,
-                        target_lang=target_lang,
-                    )
-                ).text
-                comment_text = _maybe_append_source_snippet(
-                    translated=comment_text,
-                    source=source_text,
-                    enabled=True,
-                    chars=_SOURCE_SNIPPET_CHARS,
-                )
-            except TranslationError as exc:
-                fail("Translation failed", f"kind={exc.kind} provider={exc.provider} status={exc.status_code} detail={exc}")
-
-        # Check duplication by para:<hash> tag (para:<hash> で重複判定)
-        try:
-            existing = list(zotero.iter_annotations(parent_key=pdf_key, limit_per_page=100))
-        except httpx.HTTPError as exc:
-            fail("Zotero connection failed", f"annotations fetch failed pdf_key={pdf_key} detail={exc}")
-
-        existing_tags = set()
-        for ann in existing:
-            for t in zotero.extract_tag_names(ann):
-                existing_tags.add(t)
-        if any(t in existing_tags for t in dedup_tags):
-            console.print(f"[yellow]SKIP[/yellow] duplicate paragraph tag found: {dedup_tags[0]}")
-            console.print(
-                f"[bold white]item_key[/bold white]=[cyan]{item_key}[/cyan] "
-                f"[bold white]pdf_key[/bold white]=[cyan]{pdf_key}[/cyan] "
-                f"[bold white]paragraph_index[/bold white]=[green]{paragraph_index}[/green] "
-                f"[bold white]page[/bold white]=[green]{p.page}[/green] "
-                f"[bold white]hash[/bold white]=[magenta]{p.hash}[/magenta]",
-                highlight=False,
-            )
-            return
-
-        mode = (annotation_mode or settings.annotation_mode).strip()
-        if mode not in ("note", "highlight"):
-            raise typer.BadParameter("--annotation-mode must be one of: note, highlight")
-
-        payload = build_annotation_payload(
-            paragraph=p,
-            comment_text=comment_text,
-            pdf_key=pdf_key,
-            dedup_tags=dedup_tags,
-            annotation_mode=mode,  # type: ignore[arg-type]
-            page_sizes=page_sizes,
-        )
-
-        # Read-only prints payload; write creates one annotation (read-onlyは表示のみ、writeは1件作成)
-        if read_only:
-            console.print("[cyan]READ-ONLY: planned single annotation payload[/cyan]")
-            console.print(
-                f"[bold white]item_key[/bold white]=[cyan]{item_key}[/cyan] "
-                f"[bold white]pdf_key[/bold white]=[cyan]{pdf_key}[/cyan] "
-                f"[bold white]paragraph_index[/bold white]=[green]{paragraph_index}[/green] "
-                f"[bold white]page[/bold white]=[green]{p.page}[/green] "
-                f"[bold white]hash[/bold white]=[magenta]{p.hash}[/magenta] "
-                f"[bold white]title[/bold white]=[yellow]{item_title}[/yellow]",
-                highlight=False,
-            )
-            console.print_json(json.dumps(payload, ensure_ascii=False))
-            return
-
-        try:
-            zotero.create_annotations([payload])
-        except httpx.HTTPError as exc:
-            fail("Annotation creation failed", f"pdf_key={pdf_key} paragraph_index={paragraph_index} detail={exc}")
-
-        console.print("[green]DONE[/green] 1 annotation created")
-        console.print(
-            f"[bold white]item_key[/bold white]=[cyan]{item_key}[/cyan] "
-            f"[bold white]pdf_key[/bold white]=[cyan]{pdf_key}[/cyan] "
-            f"[bold white]paragraph_index[/bold white]=[green]{paragraph_index}[/green] "
-            f"[bold white]page[/bold white]=[green]{p.page}[/green] "
-            f"[bold white]hash[/bold white]=[magenta]{p.hash}[/magenta] "
-            f"[bold white]tag[/bold white]=[yellow]{dedup_tags[0]}[/yellow]",
-            highlight=False,
+        r = run_dev_annotate(
+            zotero=zotero, settings=settings, item_key=item_key,
+            paragraph_index=paragraph_index, read_only=read_only,
+            translate=translate, annotation_mode=annotation_mode,
+            translator=translator, source_lang=source_lang or None, target_lang=target_lang or None,
         )
     finally:
-        # Ensure clients are closed (クライアントを確実にクローズ)
         zotero.close()
+
+    if r.status == "error":
+        console.print(f"[red]ERROR[/red] {r.error_stage}: {r.error_detail}")
+        raise typer.Exit(code=1)
+    loc = (
+        f"[bold white]item_key[/bold white]=[cyan]{r.item_key}[/cyan] "
+        f"[bold white]pdf_key[/bold white]=[cyan]{r.pdf_key}[/cyan] "
+        f"[bold white]paragraph_index[/bold white]=[green]{r.paragraph_index}[/green] "
+        f"[bold white]page[/bold white]=[green]{r.page}[/green] "
+        f"[bold white]hash[/bold white]=[magenta]{r.paragraph_hash}[/magenta]"
+    )
+    if r.status == "duplicate":
+        console.print(f"[yellow]SKIP[/yellow] duplicate paragraph tag found: {r.dedup_tag}")
+        console.print(loc, highlight=False)
+        return
+    if r.status == "read_only":
+        console.print("[cyan]READ-ONLY: planned single annotation payload[/cyan]")
+        console.print(loc + f" [bold white]title[/bold white]=[yellow]{r.title}[/yellow]", highlight=False)
+        console.print_json(json.dumps(r.payload, ensure_ascii=False))
+        return
+    console.print("[green]DONE[/green] 1 annotation created")
+    console.print(loc + f" [bold white]tag[/bold white]=[yellow]{r.dedup_tag}[/yellow]", highlight=False)
 
 
 # Dev command to translate exactly one paragraph (1段落だけ翻訳して確認する開発用コマンド)
@@ -626,16 +463,9 @@ def dev_translate(
     paragraph_index: int = typer.Option(0, "--paragraph-index", help="0-based paragraph index / 0始まり段落インデックス"),
 ) -> None:
     """Translate one paragraph (1段落だけ翻訳して表示)."""
-    # Validate paragraph index (段落インデックスのバリデーション)
     if paragraph_index < 0:
         raise typer.BadParameter("--paragraph-index must be >= 0")
 
-    # Print a staged error and exit with non-zero code (段階別エラーを表示して終了)
-    def fail(stage: str, detail: str) -> None:
-        console.print(f"[red]ERROR[/red] {stage}: {detail}")
-        raise typer.Exit(code=1)
-
-    # Load settings and create clients (設定読み込みとクライアント作成)
     settings = get_core_settings()
     translation_runtime = get_translation_runtime()
     translator = build_translator()
@@ -649,77 +479,31 @@ def dev_translate(
         library_id=settings.z_id,
     )
     try:
-        # Check target item existence early (対象アイテムの存在を先に確認)
-        try:
-            item = zotero.get_item(item_key)
-        except httpx.HTTPStatusError as exc:
-            status = exc.response.status_code if exc.response is not None else "unknown"
-            fail("Zotero item lookup failed", f"item_key={item_key} status={status}")
-        except httpx.HTTPError as exc:
-            fail("Zotero connection failed", f"item_key={item_key} detail={exc}")
-
-        item_title = (item.get("data") or {}).get("title") or ""
-
-        # Resolve PDF attachment from the target item (対象アイテムからPDF添付を解決)
-        try:
-            children = zotero.list_children(item_key)
-        except httpx.HTTPError as exc:
-            fail("Zotero connection failed", f"children fetch failed item_key={item_key} detail={exc}")
-
-        pdf = zotero.pick_pdf_attachment(children)
-        if not pdf:
-            fail("PDF attachment missing", f"item_key={item_key}")
-        pdf_key = pdf.get("key") or ""
-
-        # Download PDF and extract paragraphs via PyMuPDF (PDF取得→PyMuPDFで段落抽出)
-        try:
-            pdf_bytes = zotero.download_attachment(zotero.build_file_url(pdf_key))
-        except httpx.HTTPError as exc:
-            fail("Zotero connection failed", f"pdf download failed pdf_key={pdf_key} detail={exc}")
-
-        try:
-            paragraphs = extract_paragraphs_from_pdf_bytes(pdf_bytes, settings=settings)
-        except (ValueError, RuntimeError, httpx.HTTPError) as exc:
-            fail("Paragraph extraction failed", str(exc))
-        if not paragraphs:
-            fail("No paragraphs extracted", f"item_key={item_key} pdf_key={pdf_key} paragraphs=0")
-        if paragraph_index >= len(paragraphs):
-            fail(
-                "Paragraph index out of range",
-                f"item_key={item_key} paragraph_index={paragraph_index} paragraphs={len(paragraphs)}",
-            )
-
-        p = paragraphs[paragraph_index]
-
-        # Translate and print (翻訳して表示)
-        try:
-            result = translator.translate(
-                _build_paragraph_translation_input(
-                    paragraphs,
-                    paragraph_index,
-                    source_lang=source_lang,
-                    target_lang=target_lang,
-                )
-            )
-        except TranslationError as exc:
-            fail("Translation failed", f"kind={exc.kind} provider={exc.provider} status={exc.status_code} detail={exc}")
-        console.print(
-            f"[bold white]item_key[/bold white]=[cyan]{item_key}[/cyan] "
-            f"[bold white]pdf_key[/bold white]=[cyan]{pdf_key}[/cyan] "
-            f"[bold white]paragraph_index[/bold white]=[green]{paragraph_index}[/green] "
-            f"[bold white]page[/bold white]=[green]{p.page}[/green] "
-            f"[bold white]provider[/bold white]=[yellow]{result.provider}[/yellow] "
-            f"[bold white]target_lang[/bold white]=[yellow]{target_lang}[/yellow] "
-            f"[bold white]title[/bold white]=[green]{item_title}[/green]",
-            highlight=False,
+        r = run_dev_translate(
+            zotero=zotero, settings=settings, translator=translator,
+            item_key=item_key, paragraph_index=paragraph_index,
+            source_lang=source_lang, target_lang=target_lang,
         )
-        console.print("[bold cyan]SOURCE[/bold cyan]")
-        console.print(p.text)
-        console.print("\n[bold magenta]TRANSLATED[/bold magenta]")
-        console.print(result.text)
     finally:
-        # Ensure clients are closed (クライアントを確実にクローズ)
         zotero.close()
+
+    if r.status == "error":
+        console.print(f"[red]ERROR[/red] {r.error_stage}: {r.error_detail}")
+        raise typer.Exit(code=1)
+    console.print(
+        f"[bold white]item_key[/bold white]=[cyan]{r.item_key}[/cyan] "
+        f"[bold white]pdf_key[/bold white]=[cyan]{r.pdf_key}[/cyan] "
+        f"[bold white]paragraph_index[/bold white]=[green]{r.paragraph_index}[/green] "
+        f"[bold white]page[/bold white]=[green]{r.page}[/green] "
+        f"[bold white]provider[/bold white]=[yellow]{r.provider}[/yellow] "
+        f"[bold white]target_lang[/bold white]=[yellow]{r.target_lang}[/yellow] "
+        f"[bold white]title[/bold white]=[green]{r.title}[/green]",
+        highlight=False,
+    )
+    console.print("[bold cyan]SOURCE[/bold cyan]")
+    console.print(r.source_text)
+    console.print("\n[bold magenta]TRANSLATED[/bold magenta]")
+    console.print(r.translated_text)
 
 
 @dev_app.command("dump-xml")
@@ -738,7 +522,7 @@ def dev_dump_xml(
     Dump PyMuPDF extracted paragraphs XML from the same PDF attachment.
     """
 
-    def fail(stage: str, detail: str) -> None:
+    def fail(stage: str, detail: str) -> NoReturn:
         console.print(f"[red]ERROR[/red] {stage}: {detail}")
         raise typer.Exit(code=1)
 
@@ -792,12 +576,12 @@ def dev_dump_xml(
 @dev_app.command("dump-pymupdf-raw-text")
 def dev_dump_pymupdf_raw_text(
     item_key: str = typer.Option(..., "--item-key", help="Target item key / 対象アイテムキー"),
-    out: Optional[Path] = typer.Option(
+    out: Path | None = typer.Option(
         None,
         "--out",
         help="Output JSON path / 出力JSONパス（省略時は pymupdf.raw.<item_key>.json）",
     ),
-    out_text: Optional[Path] = typer.Option(
+    out_text: Path | None = typer.Option(
         None,
         "--out-text",
         help="Optional output plain text path / 追加でプレーンテキストも出力したい場合のパス",
@@ -810,13 +594,13 @@ def dev_dump_pymupdf_raw_text(
     our paragraph detection pipeline.
     """
 
-    def fail(stage: str, detail: str) -> None:
+    def fail(stage: str, detail: str) -> NoReturn:
         console.print(f"[red]ERROR[/red] {stage}: {detail}")
         raise typer.Exit(code=1)
 
     try:
-        import fitz  # type: ignore
-    except Exception as exc:
+        import fitz
+    except ImportError as exc:
         fail("PyMuPDF import failed", f"detail={exc}")
         return
 
@@ -852,7 +636,7 @@ def dev_dump_pymupdf_raw_text(
 
         doc = fitz.open(stream=pdf_bytes, filetype="pdf")
         try:
-            pages = []
+            pages: list[dict[str, Any]] = []
             total_chars = 0
             for page_index in range(doc.page_count):
                 page = doc.load_page(page_index)
@@ -902,7 +686,7 @@ def dev_dump_pymupdf_raw_text(
 @dev_app.command("dump-pymupdf-dict")
 def dev_dump_pymupdf_dict(
     item_key: str = typer.Option(..., "--item-key", help="Target item key / 対象アイテムキー"),
-    out: Optional[Path] = typer.Option(
+    out: Path | None = typer.Option(
         None,
         "--out",
         help="Output JSON path / 出力JSONパス（省略時は pymupdf.dict.<item_key>.json）",
@@ -920,13 +704,13 @@ def dev_dump_pymupdf_dict(
     fetching the PDF from Zotero by item-key.
     """
 
-    def fail(stage: str, detail: str) -> None:
+    def fail(stage: str, detail: str) -> NoReturn:
         console.print(f"[red]ERROR[/red] {stage}: {detail}")
         raise typer.Exit(code=1)
 
     try:
-        import fitz  # type: ignore
-    except Exception as exc:
+        import fitz
+    except ImportError as exc:
         fail("PyMuPDF import failed", f"detail={exc}")
         return
 
@@ -1023,7 +807,7 @@ def dev_reconstruct_from_pymupdf_dict(
         "--out-xml",
         help="Output paragraphs XML path / 段落XML出力先",
     ),
-    out_json: Optional[Path] = typer.Option(
+    out_json: Path | None = typer.Option(
         None,
         "--out-json",
         help="Optional output paragraphs JSON path / 段落JSON出力先（任意）",
@@ -1055,14 +839,14 @@ def dev_reconstruct_from_pymupdf_dict(
 @dev_app.command("paragraphs")
 def dev_paragraphs(
     item_key: str = typer.Option(..., "--item-key", help="Target item key / 対象アイテムキー"),
-    out: Optional[Path] = typer.Option(None, "--out", help="Output JSON path / JSON出力先"),
+    out: Path | None = typer.Option(None, "--out", help="Output JSON path / JSON出力先"),
     max_rows: int = typer.Option(20, "--max-rows", help="Max rows to print / 表示する最大件数"),
 ) -> None:
     """Inspect extracted paragraphs from item PDF (PyMuPDF backend)."""
     if max_rows < 1:
         raise typer.BadParameter("--max-rows must be >= 1")
 
-    def fail(stage: str, detail: str) -> None:
+    def fail(stage: str, detail: str) -> NoReturn:
         console.print(f"[red]ERROR[/red] {stage}: {detail}")
         raise typer.Exit(code=1)
 
@@ -1131,7 +915,7 @@ def dev_repair_annotations(
     (必須フィールドが欠けている注釈を修復する)
     """
 
-    def fail(stage: str, detail: str) -> None:
+    def fail(stage: str, detail: str) -> NoReturn:
         console.print(f"[red]ERROR[/red] {stage}: {detail}")
         raise typer.Exit(code=1)
 
@@ -1258,7 +1042,7 @@ def dev_delete_broken_annotations(
 ) -> None:
     """Delete broken annotations missing required fields (壊れた注釈を削除する)."""
 
-    def fail(stage: str, detail: str) -> None:
+    def fail(stage: str, detail: str) -> NoReturn:
         console.print(f"[red]ERROR[/red] {stage}: {detail}")
         raise typer.Exit(code=1)
 
@@ -1337,7 +1121,7 @@ def dev_delete_all_annotations(
 ) -> None:
     """Delete all PDF annotations for the target item (対象itemのPDF注釈を全削除する)."""
 
-    def fail(stage: str, detail: str) -> None:
+    def fail(stage: str, detail: str) -> NoReturn:
         console.print(f"[red]ERROR[/red] {stage}: {detail}")
         raise typer.Exit(code=1)
 
@@ -1398,7 +1182,7 @@ def dev_audit_annotations(
     if max_problem_rows < 0:
         raise typer.BadParameter("--max-problem-rows must be >= 0")
 
-    def fail(stage: str, detail: str) -> None:
+    def fail(stage: str, detail: str) -> NoReturn:
         console.print(f"[red]ERROR[/red] {stage}: {detail}")
         raise typer.Exit(code=1)
 
@@ -1486,7 +1270,7 @@ def dev_audit_annotations(
             elif isinstance(position, str) and position.strip():
                 try:
                     json.loads(position)
-                except Exception:
+                except json.JSONDecodeError:
                     invalid_pos.append(ann_key)
             else:
                 missing_pos.append(ann_key)
