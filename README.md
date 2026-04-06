@@ -54,7 +54,7 @@ cp .env.example .env
 `.env` の各項目は [設定](docs/configuration.md) を参照してください。初回セットアップ全体は [セットアップ](docs/setup.md)、`TRANSLATOR_PROVIDER=local_llm` を使う場合は [ローカル LLM セットアップ](docs/local-llm.md) を参照してください。
 
 ### 2. 最初の 1 件を試す
-
+- 処理したい Zotero item　（論文） に タグ：`to-translate` を付ける
 ```bash
 zotero-annotator search
 zotero-annotator base --item-key ABCD1234
